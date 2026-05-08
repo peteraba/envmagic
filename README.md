@@ -5,7 +5,7 @@ An encrypted env-var store, scoped to your project directory.
 `envmagic` is a small Go CLI that lets you stash secrets (API keys, tokens,
 DB URLs) in a per-project encrypted SQLite file, then load them into your
 shell on demand. Values are encrypted at rest with AES-256-GCM using a key
-that lives in your user config dir — never in the repo.
+that lives in your user config dir, never in the repo.
 
 ## Why
 
@@ -37,7 +37,7 @@ envmagic shell-init fish | source
 ```
 
 Without the shell wrapper, `envmagic NAME` just prints an `export …`
-statement to stdout — you can still apply it manually with
+statement to stdout - you can still apply it manually with
 `eval "$(envmagic NAME)"`.
 
 ## Usage
@@ -46,13 +46,20 @@ statement to stdout — you can still apply it manually with
 # Store a value (creates .envmagic in the current dir on first use)
 envmagic api_key 'sk-abc123'
 
-# Load it into the current shell
+# Load a single value into the current shell
 envmagic api_key
 
-# Echo the export to stderr too (handy for debugging)
+# Load ALL values from the default namespace into the current shell
+envmagic
+
+# Load ALL values from a specific namespace
+envmagic -n staging
+
+# Echo the export lines to stderr too (handy for debugging)
+envmagic --debug
 envmagic --debug api_key
 
-# Use a namespace
+# Use a namespace for individual get/set
 envmagic -n staging db_url 'postgres://…'
 envmagic -n staging db_url
 
@@ -83,7 +90,7 @@ Variable names are uppercased automatically: `envmagic api_key …` stores
 
 ## Security notes
 
-- The `.envmagic` file is safe to commit — values are encrypted — but the
+- The `.envmagic` file is safe to commit - values are encrypted - but the
   key file is not. Keep the key out of any repo or shared backup that you
   wouldn't trust with the plaintext.
 - `set` creates `.envmagic` with mode `0600`; `list` reveals variable names
@@ -95,14 +102,17 @@ Variable names are uppercased automatically: `envmagic api_key …` stores
 
 | Command                                  | Description                                  |
 | ---------------------------------------- | -------------------------------------------- |
+| `envmagic [-n NS]`                       | Export all values in a namespace             |
 | `envmagic [-n NS] NAME`                  | Decrypt and emit `export NAME=…`             |
 | `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`       |
 | `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                    |
 | `envmagic [-n NS] rm NAME`               | Remove a stored entry                        |
+| `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file            |
+| `envmagic [-n NS] import [FILE]`         | Import a `.env` file into a namespace        |
 | `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval              |
 | `envmagic help`                          | Show help                                    |
 | `envmagic --version`                     | Show version                                 |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
