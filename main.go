@@ -15,7 +15,13 @@ import (
 const version = "0.2.0"
 
 func main() {
-	app := &cli.Command{
+	if err := newApp().Run(context.Background(), os.Args); err != nil {
+		os.Exit(exitCode(err))
+	}
+}
+
+func newApp() *cli.Command {
+	return &cli.Command{
 		Name:    "envmagic",
 		Usage:   "encrypted env-var store, scoped to your project directory",
 		Version: version,
@@ -66,10 +72,6 @@ func main() {
 				Action:    cmdShellInit,
 			},
 		},
-	}
-
-	if err := app.Run(context.Background(), os.Args); err != nil {
-		os.Exit(exitCode(err))
 	}
 }
 
