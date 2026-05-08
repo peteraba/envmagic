@@ -8,6 +8,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// cmdShellInit outputs shell code to integrate envmagic with the user's shell, allowing commands like "envmagic set NAME=VALUE" to update the environment of the current shell session. The user is expected to load this code into their shell with something like "eval $(envmagic shell-init zsh)" or "envmagic shell-init fish | source".
 func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() == 0 {
 		return cli.Exit("usage: envmagic shell-init <bash|zsh|fish>", 2)
@@ -24,7 +25,7 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-const shellInitPosix = `# envmagic shell integration — load with: eval "$(envmagic shell-init zsh)"
+const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
     case "$1" in
         shell-init|help|--help|-h|--version|-v)
@@ -44,7 +45,7 @@ envmagic() {
 }
 `
 
-const shellInitFish = `# envmagic shell integration — load with: envmagic shell-init fish | source
+const shellInitFish = `# envmagic shell integration - load with: envmagic shell-init fish | source
 function envmagic
     switch "$argv[1]"
         case shell-init help --help -h --version -v

@@ -58,13 +58,13 @@ func setup(t *testing.T) func(args ...string) result {
 
 		appErr := app.Run(context.Background(), append([]string{"envmagic"}, args...))
 
-		wOut.Close()
-		wErr.Close()
+		_ = wOut.Close()
+		_ = wErr.Close()
 		os.Stdout, os.Stderr = origOut, origErr
 
 		var bufOut, bufErr bytes.Buffer
-		io.Copy(&bufOut, rOut)
-		io.Copy(&bufErr, rErr)
+		_, _ = io.Copy(&bufOut, rOut)
+		_, _ = io.Copy(&bufErr, rErr)
 
 		return result{bufOut.String(), bufErr.String(), appErr}
 	}
