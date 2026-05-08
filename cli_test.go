@@ -344,6 +344,64 @@ func TestShellInit(t *testing.T) {
 	}
 }
 
+// TestSourceAll verifies that calling envmagic with no positional arguments
+// exports all variables in the active namespace as shell-sourceable export lines.
+func TestSourceAll(t *testing.T) {
+	run := setup(t)
+
+	// Populate default and staging namespaces.
+	run("db_host", "localhost")
+	run("port", "5432")
+	run("-n", "staging", "db_host", "staging-host")
+	run("-n", "staging", "api_key", "stg-secret")
+
+	// No args → export default namespace.
+	r := run()
+	if r.code() != 0 {
+		t.Fatalf("source-all default: exit %d\nstderr: %s", r.code(), r.stderr)
+	}
+	for _, want := range []string{`export DB_HOST="localhost"`, `export PORT="5432"`} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("source-all default: stdout %q does not contain %q", r.stdout, want)
+		}
+	}
+	if strings.Contains(r.stdout, "staging") {
+		t.Error("source-all default: staging values leaked into default output")
+	}
+
+	// -n staging → export staging namespace only.
+	r = run("-n", "staging")
+	if r.code() != 0 {
+		t.Fatalf("source-all staging: exit %d\nstderr: %s", r.code(), r.stderr)
+	}
+	for _, want := range []string{`export DB_HOST="staging-host"`, `export API_KEY="stg-secret"`} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("source-all staging: stdout %q does not contain %q", r.stdout, want)
+		}
+	}
+	if strings.Contains(r.stdout, "localhost") || strings.Contains(r.stdout, "5432") {
+		t.Error("source-all staging: default values leaked into staging output")
+	}
+
+	// --debug echoes the export lines to stderr as well.
+	r = run("--debug")
+	if r.code() != 0 {
+		t.Fatalf("source-all --debug: exit %d\nstderr: %s", r.code(), r.stderr)
+	}
+	if !strings.Contains(r.stderr, "export DB_HOST=") {
+		t.Errorf("source-all --debug: expected export in stderr, got %q", r.stderr)
+	}
+
+	// Empty namespace produces no output and exits 0.
+	r = run("-n", "empty-ns")
+	if r.code() != 0 {
+		t.Fatalf("source-all empty namespace: exit %d\nstderr: %s", r.code(), r.stderr)
+	}
+	if strings.TrimSpace(r.stdout) != "" {
+		t.Errorf("source-all empty namespace: expected no stdout, got %q", r.stdout)
+	}
+}
+
 // TestInputValidation covers malformed variable names, wrong argument counts,
 // and other usage errors that must produce a non-zero exit code.
 func TestInputValidation(t *testing.T) {

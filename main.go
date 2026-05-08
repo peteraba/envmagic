@@ -12,7 +12,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
@@ -82,14 +82,15 @@ func exitCode(err error) int {
 	return 1
 }
 
-// cmdDefault handles the implicit `envmagic [-n NS] [-d] NAME [VALUE]` syntax.
+// cmdDefault handles the implicit `envmagic [-n NS] [-d] [NAME [VALUE]]` syntax.
+// With no positional arguments it sources (exports) the entire namespace.
 func cmdDefault(_ context.Context, cmd *cli.Command) error {
-	if cmd.NArg() == 0 {
-		return cli.ShowAppHelp(cmd)
-	}
-
 	ns := cmd.String("namespace")
 	debug := cmd.Bool("debug")
+
+	if cmd.NArg() == 0 {
+		return runSourceAll(ns, debug)
+	}
 
 	rawName := cmd.Args().First()
 	name := strings.ToUpper(rawName)
@@ -261,6 +262,43 @@ func runGet(namespace, name string, debug bool) error {
 	fmt.Println(line)
 	if debug {
 		fmt.Fprintln(os.Stderr, line)
+	}
+	return nil
+}
+
+func runSourceAll(namespace string, debug bool) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return errorf("getcwd: %v", err)
+	}
+	dbPath, found := findEnvmagic(cwd)
+	if !found {
+		return errorf("no .envmagic file found in %s or any parent", cwd)
+	}
+	key, err := loadOrCreateKey()
+	if err != nil {
+		return errorf("load key: %v", err)
+	}
+	s, err := openStore(dbPath)
+	if err != nil {
+		return errorf("open store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	entries, err := s.GetAll(namespace)
+	if err != nil {
+		return errorf("read: %v", err)
+	}
+	for _, e := range entries {
+		plain, err := decrypt(key, e.Enc)
+		if err != nil {
+			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
+		}
+		line := fmt.Sprintf("export %s=%s", e.Name, shellQuote(string(plain)))
+		fmt.Println(line)
+		if debug {
+			fmt.Fprintln(os.Stderr, line)
+		}
 	}
 	return nil
 }
