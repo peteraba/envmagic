@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -22,25 +21,16 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		outPath = cmd.Args().First()
 	}
 
-	cwd, err := os.Getwd()
+	s, err := openActiveStore()
 	if err != nil {
-		return errorf("getcwd: %v", err)
+		return err
 	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		return errorf("no .envmagic file found in %s or any parent", cwd)
-	}
+	defer func() { _ = s.Close() }()
 
 	key, err := loadOrCreateKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
-
-	s, err := openStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
-	}
-	defer func() { _ = s.Close() }()
 
 	entries, err := s.GetAll(ns)
 	if err != nil {
@@ -100,21 +90,9 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	cwd, err := os.Getwd()
+	dbPath, err := findOrCreateStorePath()
 	if err != nil {
-		return errorf("getcwd: %v", err)
-	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		target := filepath.Join(cwd, ".envmagic")
-		ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
-		if err != nil {
-			return errorf("read prompt: %v", err)
-		}
-		if !ok {
-			return cli.Exit("envmagic: aborted", 1)
-		}
-		dbPath = target
+		return err
 	}
 
 	key, err := loadOrCreateKey()
@@ -163,15 +141,15 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 		line = strings.TrimPrefix(line, "export ")
 		line = strings.TrimLeft(line, " \t")
 
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
+		rawName, rest, ok := strings.Cut(line, "=")
+		if !ok {
 			return nil, fmt.Errorf("line %d: missing '='", lineNum)
 		}
-		name := strings.ToUpper(strings.TrimSpace(line[:eq]))
+		name := strings.ToUpper(strings.TrimSpace(rawName))
 		if !validVarName(name) {
-			return nil, fmt.Errorf("line %d: invalid variable name %q", lineNum, line[:eq])
+			return nil, fmt.Errorf("line %d: invalid variable name %q", lineNum, rawName)
 		}
-		val, err := parseDotenvValue(line[eq+1:])
+		val, err := parseDotenvValue(rest)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNum, err)
 		}

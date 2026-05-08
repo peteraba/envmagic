@@ -114,18 +114,9 @@ func cmdList(_ context.Context, cmd *cli.Command) error {
 	}
 	ns := cmd.String("namespace")
 
-	cwd, err := os.Getwd()
+	s, err := openActiveStore()
 	if err != nil {
-		return errorf("getcwd: %v", err)
-	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		return errorf("no .envmagic file found in %s or any parent", cwd)
-	}
-
-	s, err := openStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
+		return err
 	}
 	defer func() { _ = s.Close() }()
 
@@ -154,18 +145,9 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 		return errorf("invalid env var name %q", rawName)
 	}
 
-	cwd, err := os.Getwd()
+	s, err := openActiveStore()
 	if err != nil {
-		return errorf("getcwd: %v", err)
-	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		return errorf("no .envmagic file found in %s or any parent", cwd)
-	}
-
-	s, err := openStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
+		return err
 	}
 	defer func() { _ = s.Close() }()
 
@@ -181,22 +163,9 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 }
 
 func runSet(namespace, name, value string) error {
-	cwd, err := os.Getwd()
+	dbPath, err := findOrCreateStorePath()
 	if err != nil {
-		return errorf("getcwd: %v", err)
-	}
-
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		target := filepath.Join(cwd, ".envmagic")
-		ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
-		if err != nil {
-			return errorf("read prompt: %v", err)
-		}
-		if !ok {
-			return cli.Exit("envmagic: aborted", 1)
-		}
-		dbPath = target
+		return err
 	}
 
 	key, err := loadOrCreateKey()
@@ -224,26 +193,16 @@ func runSet(namespace, name, value string) error {
 }
 
 func runGet(namespace, name string, debug bool) error {
-	cwd, err := os.Getwd()
+	s, err := openActiveStore()
 	if err != nil {
-		return errorf("getcwd: %v", err)
+		return err
 	}
-
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		return errorf("no .envmagic file found in %s or any parent", cwd)
-	}
+	defer func() { _ = s.Close() }()
 
 	key, err := loadOrCreateKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
-
-	s, err := openStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
-	}
-	defer func() { _ = s.Close() }()
 
 	enc, err := s.Get(namespace, name)
 	if err != nil {
@@ -267,23 +226,16 @@ func runGet(namespace, name string, debug bool) error {
 }
 
 func runSourceAll(namespace string, debug bool) error {
-	cwd, err := os.Getwd()
+	s, err := openActiveStore()
 	if err != nil {
-		return errorf("getcwd: %v", err)
+		return err
 	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
-		return errorf("no .envmagic file found in %s or any parent", cwd)
-	}
+	defer func() { _ = s.Close() }()
+
 	key, err := loadOrCreateKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
-	s, err := openStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
-	}
-	defer func() { _ = s.Close() }()
 
 	entries, err := s.GetAll(namespace)
 	if err != nil {
@@ -301,6 +253,46 @@ func runSourceAll(namespace string, debug bool) error {
 		}
 	}
 	return nil
+}
+
+// openActiveStore opens the store from the nearest .envmagic file,
+// erroring if none is found.
+func openActiveStore() (*store, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, errorf("getcwd: %v", err)
+	}
+	dbPath, found := findEnvmagic(cwd)
+	if !found {
+		return nil, errorf("no .envmagic file found in %s or any parent", cwd)
+	}
+	s, err := openStore(dbPath)
+	if err != nil {
+		return nil, errorf("open store: %v", err)
+	}
+	return s, nil
+}
+
+// findOrCreateStorePath returns the path to the nearest .envmagic file,
+// prompting to create one in the current directory if none is found.
+func findOrCreateStorePath() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", errorf("getcwd: %v", err)
+	}
+	dbPath, found := findEnvmagic(cwd)
+	if found {
+		return dbPath, nil
+	}
+	target := filepath.Join(cwd, ".envmagic")
+	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
+	if err != nil {
+		return "", errorf("read prompt: %v", err)
+	}
+	if !ok {
+		return "", cli.Exit("envmagic: aborted", 1)
+	}
+	return target, nil
 }
 
 func findEnvmagic(start string) (string, bool) {
