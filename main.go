@@ -12,7 +12,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {

@@ -1,2 +1,4 @@
 .envmagic
 envmagic
+# Added by goreleaser init:
+dist/
