@@ -19,7 +19,7 @@ them into the current shell when you need them.
 
 ## Install
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ```sh
 go install github.com/peteraba/envmagic/cmd/envmagic@latest
