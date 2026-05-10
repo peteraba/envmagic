@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"crypto/rand"
@@ -8,20 +8,19 @@ import (
 	"path/filepath"
 )
 
-// keyPath returns the path to the encryption key file, which is stored in the user's config directory.
-func keyPath() (string, error) {
+// KeyPath returns the path to the user's encryption key file.
+func KeyPath() (string, error) {
 	cfg, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-
 	return filepath.Join(cfg, "envmagic", "key"), nil
 }
 
-// loadOrCreateKey loads the encryption key from the key file, or creates a new one if it doesn't exist. The key is 32 random bytes (AES-256).
-func loadOrCreateKey() ([]byte, error) {
-	// Try to read the existing key file. If it exists and has the correct length, return it.
-	p, err := keyPath()
+// LoadOrCreateKey loads the 32-byte AES-256 key from the default key file,
+// generating and persisting a new one if it does not exist.
+func LoadOrCreateKey() ([]byte, error) {
+	p, err := KeyPath()
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +35,6 @@ func loadOrCreateKey() ([]byte, error) {
 		return nil, err
 	}
 
-	// Key file doesn't exist, so create a new one with a random key. Ensure the directory exists and the file is created with 0600 permissions.
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return nil, err
 	}

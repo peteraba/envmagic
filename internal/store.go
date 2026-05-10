@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"database/sql"
@@ -9,11 +9,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type store struct {
+// Store is a SQLite-backed encrypted variable store.
+type Store struct {
 	db *sql.DB
 }
 
-func openStore(path string) (*store, error) {
+// OpenStore opens (or creates) the SQLite database at path.
+func OpenStore(path string) (*Store, error) {
 	created := false
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		created = true
@@ -48,14 +50,14 @@ func openStore(path string) (*store, error) {
 		}
 	}
 
-	return &store{db: db}, nil
+	return &Store{db: db}, nil
 }
 
-func (s *store) Close() error {
+func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *store) Set(namespace, name string, encrypted []byte) error {
+func (s *Store) Set(namespace, name string, encrypted []byte) error {
 	_, err := s.db.Exec(`
 		INSERT INTO env_vars (namespace, name, value, updated_at)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -66,7 +68,7 @@ func (s *store) Set(namespace, name string, encrypted []byte) error {
 	return err
 }
 
-func (s *store) Get(namespace, name string) ([]byte, error) {
+func (s *Store) Get(namespace, name string) ([]byte, error) {
 	var data []byte
 	err := s.db.QueryRow(
 		`SELECT value FROM env_vars WHERE namespace = ? AND name = ?`,
@@ -78,7 +80,7 @@ func (s *store) Get(namespace, name string) ([]byte, error) {
 	return data, err
 }
 
-func (s *store) List(namespace string) ([]string, error) {
+func (s *Store) List(namespace string) ([]string, error) {
 	rows, err := s.db.Query(
 		`SELECT name FROM env_vars WHERE namespace = ? ORDER BY name`,
 		namespace,
@@ -98,7 +100,7 @@ func (s *store) List(namespace string) ([]string, error) {
 	return names, rows.Err()
 }
 
-func (s *store) Delete(namespace, name string) (int64, error) {
+func (s *Store) Delete(namespace, name string) (int64, error) {
 	res, err := s.db.Exec(
 		`DELETE FROM env_vars WHERE namespace = ? AND name = ?`,
 		namespace, name,
@@ -109,12 +111,13 @@ func (s *store) Delete(namespace, name string) (int64, error) {
 	return res.RowsAffected()
 }
 
-type envEntry struct {
+// Entry holds an encrypted variable retrieved from the store.
+type Entry struct {
 	Name string
 	Enc  []byte
 }
 
-func (s *store) GetAll(namespace string) ([]envEntry, error) {
+func (s *Store) GetAll(namespace string) ([]Entry, error) {
 	rows, err := s.db.Query(
 		`SELECT name, value FROM env_vars WHERE namespace = ? ORDER BY name`,
 		namespace,
@@ -123,9 +126,9 @@ func (s *store) GetAll(namespace string) ([]envEntry, error) {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var entries []envEntry
+	var entries []Entry
 	for rows.Next() {
-		var e envEntry
+		var e Entry
 		if err := rows.Scan(&e.Name, &e.Enc); err != nil {
 			return nil, err
 		}

@@ -1,4 +1,4 @@
-module envmagic
+module github.com/peteraba/envmagic
 
 go 1.26.3
 

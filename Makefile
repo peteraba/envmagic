@@ -4,21 +4,21 @@ GOBIN   := $(shell go env GOPATH)/bin
 .PHONY: build install lint test version tag release
 
 build:
-	go build -o $(BINARY) .
+	go build -o $(BINARY) ./cmd/envmagic
 
 install:
-	go install .
+	go install ./cmd/envmagic
 
 lint:
 	gofumpt -w .
-	golangci-lint run .
+	golangci-lint run ./...
 	govulncheck ./...
 
 test: lint
 	go test ./...
 
 version:
-	@VERSION=$$(go run . --version | awk '{print $$NF}'); \
+	@VERSION=$$(go run ./cmd/envmagic --version | awk '{print $$NF}'); \
 	if git tag | grep -qx "$$VERSION"; then \
 		echo "Error: version $$VERSION already exists as a git tag — bump the version before committing"; \
 		exit 1; \
@@ -27,7 +27,7 @@ version:
 	fi
 
 tag: version
-	@VERSION=$$(go run . --version | awk '{print $$NF}'); \
+	@VERSION=$$(go run ./cmd/envmagic --version | awk '{print $$NF}'); \
 	git tag "$$VERSION" && echo "Tagged $$VERSION"
 
 release: tag

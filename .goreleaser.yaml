@@ -16,7 +16,7 @@ before:
     - make test
 
 builds:
-  - main: .
+  - main: ./cmd/envmagic
     env:
       - CGO_ENABLED=0
     goos:
