@@ -3,10 +3,13 @@ package envmagic
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/peteraba/envmagic/internal"
 )
+
+const DEFAULT_NAMESPACE = "default"
 
 // ErrNotFound is returned by Get when the requested variable does not exist.
 var ErrNotFound = errors.New("not found")
@@ -18,21 +21,49 @@ type Client struct {
 	key []byte
 }
 
-// Open opens (or creates) a store at storePath using the key from the default
-// key path (~/.config/envmagic/key), generating a new key if none exists.
-func Open(storePath string) (*Client, error) {
+// OpenWithKeyAndPath opens a store at storePath using the key from the specified key path.
+func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error) {
 	s, err := internal.OpenStore(storePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open store, path: %s, error: %w", storePath, err)
+		return nil, fmt.Errorf("failed to open store, store path: %s, error: %w", storePath, err)
+	}
+
+	key, err := internal.LoadKey(keyPath)
+	if err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("failed to load key, key path: %s, error: %w", keyPath, err)
+	}
+
+	return &Client{s: s, key: key}, nil
+}
+
+// OpenWithPath opens (or creates) a store at storePath using the key from the default
+// key path (~/.config/envmagic/key), generating a new key if none exists.
+func OpenWithPath(storePath string) (*Client, error) {
+	s, err := internal.OpenStore(storePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open store, store path: %s, error: %w", storePath, err)
 	}
 
 	key, err := internal.LoadOrCreateKey()
 	if err != nil {
 		_ = s.Close()
-		return nil, fmt.Errorf("failed to load or create key, path: %s, error: %w", storePath, err)
+		return nil, fmt.Errorf("failed to load or create key, store path: %s, error: %w", storePath, err)
 	}
 
 	return &Client{s: s, key: key}, nil
+}
+
+// Open opens (or creates) a store at the default store path using the key from the default
+// key path (~/.config/envmagic/key), generating a new key if none exists.
+func Open() (*Client, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		slog.Error("Error getting working directory", "error", err, "dir", dir)
+		os.Exit(1)
+	}
+
+	return OpenWithPath(dir + "/.envmagic")
 }
 
 // Close closes the underlying store.

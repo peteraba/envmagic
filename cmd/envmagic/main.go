@@ -15,7 +15,7 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-const version = "v0.3.2"
+const version = "v0.3.4"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {

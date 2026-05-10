@@ -19,6 +19,24 @@ func KeyPath() (string, error) {
 	return filepath.Join(cfg, "envmagic", "key"), nil
 }
 
+// LoadKey loads the 32-byte AES-256 key from the specified path.
+func LoadKey(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if len(data) != 32 {
+			return nil, fmt.Errorf("key file %s has invalid length %d (expected 32)", path, len(data))
+		}
+
+		return data, nil
+	}
+
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("failed to read key file %s: %w", path, err)
+	}
+
+	return nil, fmt.Errorf("key file not found at %s", path)
+}
+
 // LoadOrCreateKey loads the 32-byte AES-256 key from the default key file,
 // generating and persisting a new one if it does not exist.
 func LoadOrCreateKey() ([]byte, error) {
