@@ -93,22 +93,25 @@ func (c *Client) Get(namespace, name string) (string, error) {
 
 // Load decrypts all variables in namespace and sets them as environment
 // variables in the current process via os.Setenv.
-func (c *Client) Load(namespace string) error {
+func (c *Client) Load(namespace string) ([]string, error) {
 	entries, err := c.s.GetAll(namespace)
 	if err != nil {
-		return fmt.Errorf("failed to get all entries: %w", err)
+		return nil, fmt.Errorf("failed to get all entries: %w", err)
 	}
 
+	var loaded []string
 	for _, e := range entries {
 		plain, err := internal.Decrypt(c.key, e.Enc)
 		if err != nil {
-			return fmt.Errorf("decrypt %s: %w", e.Name, err)
+			return nil, fmt.Errorf("decrypt %s: %w", e.Name, err)
 		}
 
 		if err := os.Setenv(e.Name, string(plain)); err != nil {
-			return fmt.Errorf("setenv %s: %w", e.Name, err)
+			return nil, fmt.Errorf("setenv %s: %w", e.Name, err)
 		}
+
+		loaded = append(loaded, e.Name)
 	}
 
-	return nil
+	return loaded, nil
 }
