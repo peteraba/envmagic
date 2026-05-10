@@ -24,11 +24,12 @@ func OpenStore(path string) (*Store, error) {
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database, path: %s, error: %w", path, err)
 	}
+
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to ping database, path: %s, error: %w", path, err)
 	}
 
 	if _, err := db.Exec(`
@@ -41,7 +42,7 @@ func OpenStore(path string) (*Store, error) {
 		)
 	`); err != nil {
 		_ = db.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to create table, path: %s, error: %w", path, err)
 	}
 
 	if created {
@@ -65,7 +66,10 @@ func (s *Store) Set(namespace, name string, encrypted []byte) error {
 			value = excluded.value,
 			updated_at = CURRENT_TIMESTAMP
 	`, namespace, name, encrypted)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to set entry, namespace: %s, name: %s, error: %w", namespace, name, err)
+	}
+	return nil
 }
 
 func (s *Store) Get(namespace, name string) ([]byte, error) {
@@ -75,8 +79,9 @@ func (s *Store) Get(namespace, name string) ([]byte, error) {
 		namespace, name,
 	).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, fmt.Errorf("entry not found, namespace: %s, name: %s", namespace, name)
 	}
+
 	return data, err
 }
 
@@ -89,6 +94,7 @@ func (s *Store) List(namespace string) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+
 	var names []string
 	for rows.Next() {
 		var n string
@@ -97,6 +103,7 @@ func (s *Store) List(namespace string) ([]string, error) {
 		}
 		names = append(names, n)
 	}
+
 	return names, rows.Err()
 }
 

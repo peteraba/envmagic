@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"errors"
+	"fmt"
 )
 
 // Encrypt seals plaintext with AES-256-GCM. Output layout: nonce || ciphertext||tag.
@@ -15,16 +16,16 @@ func Encrypt(key, plaintext []byte) ([]byte, error) {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating new cipher, error: %w", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating new GCM, error: %w", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error generating nonce, error: %w", err)
 	}
 
 	return gcm.Seal(nonce, nonce, plaintext, nil), nil
@@ -38,16 +39,16 @@ func Decrypt(key, data []byte) ([]byte, error) {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating new cipher, error: %w", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error creating new GCM, error: %w", err)
 	}
 	n := gcm.NonceSize()
 	if len(data) < n {
-		return nil, errors.New("decrypt: ciphertext too short")
+		return nil, fmt.Errorf("decrypt: ciphertext too short, length: %d, expected at least %d", len(data), n)
 	}
 	nonce, ct := data[:n], data[n:]
 

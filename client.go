@@ -23,13 +23,15 @@ type Client struct {
 func Open(storePath string) (*Client, error) {
 	s, err := internal.OpenStore(storePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open store, path: %s, error: %w", storePath, err)
 	}
+
 	key, err := internal.LoadOrCreateKey()
 	if err != nil {
 		_ = s.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to load or create key, path: %s, error: %w", storePath, err)
 	}
+
 	return &Client{s: s, key: key}, nil
 }
 
@@ -43,15 +45,18 @@ func (c *Client) Close() error {
 func (c *Client) Get(namespace, name string) (string, error) {
 	enc, err := c.s.Get(namespace, name)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get entry, namespace: %s, name: %s, error: %w", namespace, name, err)
 	}
+
 	if enc == nil {
-		return "", ErrNotFound
+		return "", fmt.Errorf("entry not found: %w", ErrNotFound)
 	}
+
 	plain, err := internal.Decrypt(c.key, enc)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to decrypt entry: %w", err)
 	}
+
 	return string(plain), nil
 }
 
@@ -60,16 +65,19 @@ func (c *Client) Get(namespace, name string) (string, error) {
 func (c *Client) Load(namespace string) error {
 	entries, err := c.s.GetAll(namespace)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get all entries: %w", err)
 	}
+
 	for _, e := range entries {
 		plain, err := internal.Decrypt(c.key, e.Enc)
 		if err != nil {
 			return fmt.Errorf("decrypt %s: %w", e.Name, err)
 		}
+
 		if err := os.Setenv(e.Name, string(plain)); err != nil {
 			return fmt.Errorf("setenv %s: %w", e.Name, err)
 		}
 	}
+
 	return nil
 }
