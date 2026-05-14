@@ -138,7 +138,7 @@ func storeAll(ns string, kvs [][2]string) error {
 		return err
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
