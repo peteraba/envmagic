@@ -8,6 +8,30 @@ import (
 	"github.com/peteraba/envmagic"
 )
 
+func TestOpenWithPath_KeyCreated(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	storePath := filepath.Join(t.TempDir(), ".envmagic")
+
+	c1, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c1.Close()
+	if !c1.KeyCreated() {
+		t.Fatal("first open: want KeyCreated true (new key file)")
+	}
+
+	c2, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c2.Close()
+	if c2.KeyCreated() {
+		t.Fatal("second open: want KeyCreated false")
+	}
+}
+
 func TestClient_Get_ErrNotFound(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
