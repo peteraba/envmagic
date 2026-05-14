@@ -122,7 +122,7 @@ func cmdKey(_ context.Context, cmd *cli.Command) error {
 		return errorf("key path: %v", err)
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
@@ -241,7 +241,7 @@ func runSet(namespace, name, value string) error {
 		return err
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
@@ -276,10 +276,10 @@ func runGet(namespace, name string, debug bool) error {
 
 	enc, err := h.s.Get(namespace, name)
 	if err != nil {
+		if errors.Is(err, internal.ErrEntryNotFound) {
+			return errorf("%s not found in namespace %q", name, namespace)
+		}
 		return errorf("read: %v", err)
-	}
-	if enc == nil {
-		return errorf("%s not found in namespace %q", name, namespace)
 	}
 
 	plain, err := internal.Decrypt(h.key, enc)
@@ -336,7 +336,7 @@ func openActiveHandle() (*handle, error) {
 		return nil, errorf("no .envmagic file found in %s or any parent", cwd)
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return nil, errorf("load key: %v", err)
 	}
@@ -444,6 +444,30 @@ func promptYesNo(prompt string) (bool, error) {
 	}
 
 	return false, errorf("prompt failed after 3 attempts")
+}
+
+// loadKey loads or creates the user's encryption key; when a new key file is
+// created, backup instructions are printed to stderr.
+func loadKey() ([]byte, error) {
+	key, created, err := internal.LoadOrCreateKey()
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		notifyNewEncryptionKey(key)
+	}
+	return key, nil
+}
+
+func notifyNewEncryptionKey(key []byte) {
+	path, err := internal.KeyPath()
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "envmagic: generated new encryption key at %s\n", path)
+	fmt.Fprintf(os.Stderr, "envmagic: key (base64): %s\n", base64.StdEncoding.EncodeToString(key))
+	fmt.Fprintf(os.Stderr, "envmagic: You can display the key again later by running `envmagic key`.\n")
+	fmt.Fprintln(os.Stderr, "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.")
 }
 
 // errorf formats an error message and wraps it in a cli.Exit with code 1.

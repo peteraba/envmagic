@@ -95,7 +95,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}

@@ -171,14 +171,14 @@ import (
 )
 
 func main() {
-    c, err := envmagic.Open("/path/to/project/.envmagic")
+    c, err := envmagic.OpenWithPath("/path/to/project/.envmagic")
     if err != nil {
         log.Fatal(err)
     }
     defer c.Close()
 
     // Decrypts every variable in the namespace and calls os.Setenv for each.
-    if err := c.Load("default"); err != nil {
+    if _, err := c.Load(envmagic.DefaultNamespace); err != nil {
         log.Fatal(err)
     }
 
@@ -190,7 +190,12 @@ func main() {
 ### Read a single variable
 
 ```go
-val, err := c.Get("default", "API_KEY")
+import (
+    "errors"
+    "log"
+)
+
+val, err := c.Get(envmagic.DefaultNamespace, "API_KEY")
 if errors.Is(err, envmagic.ErrNotFound) {
     log.Fatal("API_KEY is not set")
 }
@@ -202,18 +207,26 @@ if err != nil {
 ### API reference
 
 ```go
-// Open opens (or creates) the store at storePath, loading the key from
+const DefaultNamespace = "default"
+
+// Open opens (or creates) .envmagic in the current working directory.
+func Open() (*Client, error)
+
+// OpenWithPath opens (or creates) the store at storePath, loading the key from
 // $XDG_CONFIG_HOME/envmagic/key (generated on first use).
-func Open(storePath string) (*Client, error)
+func OpenWithPath(storePath string) (*Client, error)
+
+// OpenWithKeyAndPath opens storePath using the key file at keyPath.
+func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error)
 
 // Close closes the underlying store.
 func (c *Client) Close() error
 
-// Load decrypts all variables in namespace and sets them via os.Setenv.
-func (c *Client) Load(namespace string) error
+// Load decrypts all variables in namespace, sets them via os.Setenv, and returns the names loaded.
+func (c *Client) Load(namespace string) ([]string, error)
 
 // Get returns the decrypted value for namespace/name.
-// Returns ErrNotFound if the entry does not exist.
+// Use errors.Is(err, ErrNotFound) when the entry does not exist.
 func (c *Client) Get(namespace, name string) (string, error)
 
 var ErrNotFound = errors.New("not found")

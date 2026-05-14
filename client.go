@@ -3,13 +3,14 @@ package envmagic
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/peteraba/envmagic/internal"
 )
 
-const DEFAULT_NAMESPACE = "default"
+// DefaultNamespace is the namespace used when none is specified on the CLI.
+const DefaultNamespace = "default"
 
 // ErrNotFound is returned by Get when the requested variable does not exist.
 var ErrNotFound = errors.New("not found")
@@ -37,15 +38,16 @@ func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error) {
 	return &Client{s: s, key: key}, nil
 }
 
-// OpenWithPath opens (or creates) a store at storePath using the key from the default
+// OpenWithPath opens (or creates) the SQLite store at storePath using the key from the default
 // key path (~/.config/envmagic/key), generating a new key if none exists.
+// If the store file does not exist, it is created on open.
 func OpenWithPath(storePath string) (*Client, error) {
 	s, err := internal.OpenStore(storePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open store, store path: %s, error: %w", storePath, err)
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, _, err := internal.LoadOrCreateKey()
 	if err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("failed to load or create key, store path: %s, error: %w", storePath, err)
@@ -54,16 +56,15 @@ func OpenWithPath(storePath string) (*Client, error) {
 	return &Client{s: s, key: key}, nil
 }
 
-// Open opens (or creates) a store at the default store path using the key from the default
-// key path (~/.config/envmagic/key), generating a new key if none exists.
+// Open opens (or creates) the store at .envmagic in the current working directory,
+// using the key from the default key path (~/.config/envmagic/key), generating a new key if none exists.
 func Open() (*Client, error) {
 	dir, err := os.Getwd()
 	if err != nil {
-		slog.Error("Error getting working directory", "error", err, "dir", dir)
-		os.Exit(1)
+		return nil, fmt.Errorf("get working directory: %w", err)
 	}
 
-	return OpenWithPath(dir + "/.envmagic")
+	return OpenWithPath(filepath.Join(dir, ".envmagic"))
 }
 
 // Close closes the underlying store.
@@ -72,15 +73,14 @@ func (c *Client) Close() error {
 }
 
 // Get retrieves and decrypts the value for namespace/name.
-// Returns ErrNotFound if the entry does not exist.
+// Returns ErrNotFound if the entry does not exist; use errors.Is(err, ErrNotFound).
 func (c *Client) Get(namespace, name string) (string, error) {
 	enc, err := c.s.Get(namespace, name)
 	if err != nil {
+		if errors.Is(err, internal.ErrEntryNotFound) {
+			return "", ErrNotFound
+		}
 		return "", fmt.Errorf("failed to get entry, namespace: %s, name: %s, error: %w", namespace, name, err)
-	}
-
-	if enc == nil {
-		return "", fmt.Errorf("entry not found: %w", ErrNotFound)
 	}
 
 	plain, err := internal.Decrypt(c.key, enc)
