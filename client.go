@@ -18,8 +18,9 @@ var ErrNotFound = errors.New("not found")
 // Client holds an open store and its encryption key.
 // Obtain one via Open.
 type Client struct {
-	s   *internal.Store
-	key []byte
+	s          *internal.Store
+	key        []byte
+	keyCreated bool
 }
 
 // OpenWithKeyAndPath opens a store at storePath using the key from the specified key path.
@@ -47,13 +48,13 @@ func OpenWithPath(storePath string) (*Client, error) {
 		return nil, fmt.Errorf("failed to open store, store path: %s, error: %w", storePath, err)
 	}
 
-	key, _, err := internal.LoadOrCreateKey()
+	key, created, err := internal.LoadOrCreateKey()
 	if err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("failed to load or create key, store path: %s, error: %w", storePath, err)
 	}
 
-	return &Client{s: s, key: key}, nil
+	return &Client{s: s, key: key, keyCreated: created}, nil
 }
 
 // Open opens (or creates) the store at .envmagic in the current working directory,
@@ -70,6 +71,13 @@ func Open() (*Client, error) {
 // Close closes the underlying store.
 func (c *Client) Close() error {
 	return c.s.Close()
+}
+
+// KeyCreated reports whether Open or OpenWithPath generated a new default key file
+// (~/.config/envmagic/key) because none existed. Callers should warn users to back
+// up the key when this is true.
+func (c *Client) KeyCreated() bool {
+	return c.keyCreated
 }
 
 // Get retrieves and decrypts the value for namespace/name.
