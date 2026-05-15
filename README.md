@@ -76,6 +76,11 @@ envmagic rm api_key
 # Import / export .env files
 envmagic import .env
 envmagic -n staging export staging.env
+
+# Non-interactive / CI: create .envmagic without a prompt (set/import only)
+envmagic --yes api_key 'sk-abc123'
+envmagic import --yes .env
+# or: ENVMAGIC_NONINTERACTIVE=1 envmagic import .env
 ```
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
@@ -112,7 +117,8 @@ writing, so a truncated backup is rejected before it overwrites anything.
 ## How it works
 
 - **Store.** Each project gets a `.envmagic` SQLite file. `set` looks for one
-  in the current directory and offers to create it; `get`/`list`/`rm` walk up
+  in the current directory and offers to create it (use `--yes` or
+  `ENVMAGIC_NONINTERACTIVE=1` to create without a prompt); `get`/`list`/`rm` walk up
   the directory tree to find the nearest one (like `.git`).
 - **Encryption.** Values are sealed with AES-256-GCM. Names and namespaces
   are stored in plaintext (so `list` works without the key); only values are
@@ -171,14 +177,14 @@ import (
 )
 
 func main() {
-    c, err := envmagic.Open("/path/to/project/.envmagic")
+    c, err := envmagic.OpenWithPath("/path/to/project/.envmagic")
     if err != nil {
         log.Fatal(err)
     }
     defer c.Close()
 
     // Decrypts every variable in the namespace and calls os.Setenv for each.
-    if err := c.Load("default"); err != nil {
+    if _, err := c.Load(envmagic.DefaultNamespace); err != nil {
         log.Fatal(err)
     }
 
@@ -190,7 +196,12 @@ func main() {
 ### Read a single variable
 
 ```go
-val, err := c.Get("default", "API_KEY")
+import (
+    "errors"
+    "log"
+)
+
+val, err := c.Get(envmagic.DefaultNamespace, "API_KEY")
 if errors.Is(err, envmagic.ErrNotFound) {
     log.Fatal("API_KEY is not set")
 }
@@ -202,18 +213,26 @@ if err != nil {
 ### API reference
 
 ```go
-// Open opens (or creates) the store at storePath, loading the key from
+const DefaultNamespace = "default"
+
+// Open opens (or creates) .envmagic in the current working directory.
+func Open() (*Client, error)
+
+// OpenWithPath opens (or creates) the store at storePath, loading the key from
 // $XDG_CONFIG_HOME/envmagic/key (generated on first use).
-func Open(storePath string) (*Client, error)
+func OpenWithPath(storePath string) (*Client, error)
+
+// OpenWithKeyAndPath opens storePath using the key file at keyPath.
+func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error)
 
 // Close closes the underlying store.
 func (c *Client) Close() error
 
-// Load decrypts all variables in namespace and sets them via os.Setenv.
-func (c *Client) Load(namespace string) error
+// Load decrypts all variables in namespace, sets them via os.Setenv, and returns the names loaded.
+func (c *Client) Load(namespace string) ([]string, error)
 
 // Get returns the decrypted value for namespace/name.
-// Returns ErrNotFound if the entry does not exist.
+// Use errors.Is(err, ErrNotFound) when the entry does not exist.
 func (c *Client) Get(namespace, name string) (string, error)
 
 var ErrNotFound = errors.New("not found")

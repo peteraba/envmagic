@@ -1,13 +1,17 @@
 BINARY  := envmagic
 GOBIN   := $(shell go env GOPATH)/bin
 
+# Injected at link time; falls back to "dev" when not set (e.g. plain go run).
+VERSION_LD := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GO_LD_FLAGS := -s -w -X main.version=$(VERSION_LD)
+
 .PHONY: build install lint test version tag release
 
 build:
-	go build -o $(BINARY) ./cmd/envmagic
+	go build -ldflags "$(GO_LD_FLAGS)" -o $(BINARY) ./cmd/envmagic
 
 install:
-	go install ./cmd/envmagic
+	go install -ldflags "$(GO_LD_FLAGS)" ./cmd/envmagic
 
 lint:
 	gofumpt -w .
@@ -18,7 +22,7 @@ test: lint
 	go test ./...
 
 version:
-	@VERSION=$$(go run ./cmd/envmagic --version | awk '{print $$NF}'); \
+	@VERSION=$$(go run -ldflags "$(GO_LD_FLAGS)" ./cmd/envmagic --version | awk '{print $$NF}'); \
 	if git tag | grep -qx "$$VERSION"; then \
 		echo "Error: version $$VERSION already exists as a git tag — bump the version before committing"; \
 		exit 1; \
@@ -27,7 +31,7 @@ version:
 	fi
 
 tag: version
-	@VERSION=$$(go run ./cmd/envmagic --version | awk '{print $$NF}'); \
+	@VERSION=$$(go run -ldflags "$(GO_LD_FLAGS)" ./cmd/envmagic --version | awk '{print $$NF}'); \
 	git tag "$$VERSION" && echo "Tagged $$VERSION"
 
 release: tag

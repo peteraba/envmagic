@@ -90,12 +90,12 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	dbPath, err := findOrCreateStorePath()
+	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}

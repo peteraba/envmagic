@@ -72,6 +72,37 @@ func setup(t *testing.T) func(args ...string) result {
 	}
 }
 
+// setupBare is like setup but does not create .envmagic (for testing create flows).
+func setupBare(t *testing.T) func(args ...string) result {
+	t.Helper()
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	return func(args ...string) result {
+		rOut, wOut, _ := os.Pipe()
+		rErr, wErr, _ := os.Pipe()
+		origOut, origErr := os.Stdout, os.Stderr
+		os.Stdout, os.Stderr = wOut, wErr
+
+		app := newApp()
+		app.ExitErrHandler = func(_ context.Context, _ *cli.Command, _ error) {}
+
+		appErr := app.Run(context.Background(), append([]string{"envmagic"}, args...))
+
+		_ = wOut.Close()
+		_ = wErr.Close()
+		os.Stdout, os.Stderr = origOut, origErr
+
+		var bufOut, bufErr bytes.Buffer
+		_, _ = io.Copy(&bufOut, rOut)
+		_, _ = io.Copy(&bufErr, rErr)
+
+		return result{bufOut.String(), bufErr.String(), appErr}
+	}
+}
+
 // TestSetAndGet covers the implicit get/set syntax, name uppercasing, the
 // --debug flag, overwrites, and the error case for a missing variable.
 func TestSetAndGet(t *testing.T) {
@@ -321,6 +352,9 @@ func TestShellInit(t *testing.T) {
 	if !strings.Contains(bash.stdout, "envmagic()") {
 		t.Errorf("posix init: expected 'envmagic()' function definition, got %q", bash.stdout)
 	}
+	if !strings.Contains(bash.stdout, "import|rm|") {
+		t.Errorf("posix init: expected import and rm in shell-init bypass case, got %q", bash.stdout)
+	}
 
 	fish := run("shell-init", "fish")
 	if fish.code() != 0 {
@@ -401,6 +435,58 @@ func TestSourceAll(t *testing.T) {
 	}
 	if strings.TrimSpace(r.stdout) != "" {
 		t.Errorf("source-all empty namespace: expected no stdout, got %q", r.stdout)
+	}
+}
+
+// TestImportCreatesStoreWithYes verifies import can create .envmagic when none exists.
+func TestImportCreatesStoreWithYes(t *testing.T) {
+	run := setupBare(t)
+	envContent := "ONLY_KEY=only-val\n"
+	envFile := filepath.Join(t.TempDir(), "in.env")
+	if err := os.WriteFile(envFile, []byte(envContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := run("import", "--yes", envFile)
+	if r.code() != 0 {
+		t.Fatalf("import --yes: exit %d stderr=%q", r.code(), r.stderr)
+	}
+	if _, err := os.Stat(".envmagic"); err != nil {
+		t.Fatalf("expected .envmagic in cwd: %v", err)
+	}
+	r = run("only_key")
+	if r.code() != 0 || !strings.Contains(r.stdout, "only-val") {
+		t.Fatalf("get after import: exit=%d stdout=%q stderr=%q", r.code(), r.stdout, r.stderr)
+	}
+}
+
+func TestImportCreatesStoreWithEnvNonInteractive(t *testing.T) {
+	run := setupBare(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
+	envFile := filepath.Join(t.TempDir(), "in.env")
+	if err := os.WriteFile(envFile, []byte("X=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := run("import", envFile)
+	if r.code() != 0 {
+		t.Fatalf("import with ENVMAGIC_NONINTERACTIVE: exit %d stderr=%q", r.code(), r.stderr)
+	}
+	if _, err := os.Stat(".envmagic"); err != nil {
+		t.Fatalf("expected .envmagic: %v", err)
+	}
+}
+
+func TestSetCreatesStoreWithYes(t *testing.T) {
+	run := setupBare(t)
+	r := run("--yes", "foo_key", "bar")
+	if r.code() != 0 {
+		t.Fatalf("set --yes: exit %d stderr=%q", r.code(), r.stderr)
+	}
+	if _, err := os.Stat(".envmagic"); err != nil {
+		t.Fatalf("expected .envmagic: %v", err)
+	}
+	r = run("foo_key")
+	if r.code() != 0 || !strings.Contains(r.stdout, "bar") {
+		t.Fatalf("get: exit=%d stdout=%q", r.code(), r.stdout)
 	}
 }
 
