@@ -90,7 +90,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	dbPath, err := findOrCreateStorePath()
+	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
 	}

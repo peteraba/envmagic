@@ -15,7 +15,8 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-const version = "v0.4.0"
+// version is set at link time (see Makefile / GoReleaser); default for go run.
+var version = "dev"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
@@ -40,6 +41,12 @@ func newApp() *cli.Command {
 				Name:    "debug",
 				Aliases: []string{"d"},
 				Usage:   "echo export to stderr (get only)",
+			},
+			&cli.BoolFlag{
+				Name:    "yes",
+				Aliases: []string{"y"},
+				Usage:   "create a new .envmagic in the current directory if none exists (no prompt); may use ENVMAGIC_NONINTERACTIVE=1 instead",
+				Sources: cli.EnvVars("ENVMAGIC_NONINTERACTIVE"),
 			},
 		},
 		Action: cmdDefault,
@@ -168,7 +175,7 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 	case 1:
 		return runGet(ns, name, debug)
 	case 2:
-		return runSet(ns, name, cmd.Args().Get(1))
+		return runSet(cmd, ns, name, cmd.Args().Get(1))
 	default:
 		return cli.Exit("envmagic: too many positional arguments; expected NAME [VALUE]", 2)
 	}
@@ -235,8 +242,8 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 }
 
 // runSet stores the given name=value pair in the active store under the given namespace.
-func runSet(namespace, name, value string) error {
-	dbPath, err := findOrCreateStorePath()
+func runSet(cmd *cli.Command, namespace, name, value string) error {
+	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
 	}
@@ -351,7 +358,8 @@ func openActiveHandle() (*handle, error) {
 
 // findOrCreateStorePath returns the path to the nearest .envmagic file,
 // prompting to create one in the current directory if none is found.
-func findOrCreateStorePath() (string, error) {
+// With --yes or ENVMAGIC_NONINTERACTIVE=1, creates without prompting.
+func findOrCreateStorePath(cmd *cli.Command) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", errorf("getcwd: %v", err)
@@ -362,6 +370,10 @@ func findOrCreateStorePath() (string, error) {
 	}
 
 	target := filepath.Join(cwd, ".envmagic")
+	if cmd.Root().Bool("yes") {
+		return target, nil
+	}
+
 	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
 	if err != nil {
 		return "", errorf("read prompt: %v", err)

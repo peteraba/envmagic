@@ -25,10 +25,14 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+// shellInitPosix / shellInitFish: the case lists must include every subcommand (and
+// help/version flags) whose stdout must not be eval'd. When adding a command,
+// update both scripts and keep them in sync.
+
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
     case "$1" in
-        shell-init|key|list|ls|export|help|--help|-h|--version|-v)
+        shell-init|key|list|ls|export|import|rm|remove|delete|help|--help|-h|--version|-v)
             command envmagic "$@"
             return $?
             ;;
@@ -48,7 +52,7 @@ envmagic() {
 const shellInitFish = `# envmagic shell integration - load with: envmagic shell-init fish | source
 function envmagic
     switch "$argv[1]"
-        case shell-init key list ls export help --help -h --version -v
+        case shell-init key list ls export import rm remove delete help --help -h --version -v
             command envmagic $argv
             return $status
     end
