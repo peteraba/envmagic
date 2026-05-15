@@ -83,6 +83,11 @@ envmagic import -i .env.example
 
 # Or just scaffold the namespace: store every name with an empty value
 envmagic import --empty .env.example
+
+# Non-interactive / CI: create .envmagic without a prompt (set/import only)
+envmagic --yes api_key 'sk-abc123'
+envmagic import --yes .env
+# or: ENVMAGIC_NONINTERACTIVE=1 envmagic import .env
 ```
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
@@ -135,7 +140,8 @@ writing, so a truncated backup is rejected before it overwrites anything.
 ## How it works
 
 - **Store.** Each project gets a `.envmagic` SQLite file. `set` looks for one
-  in the current directory and offers to create it; `get`/`list`/`rm` walk up
+  in the current directory and offers to create it (use `--yes` or
+  `ENVMAGIC_NONINTERACTIVE=1` to create without a prompt); `get`/`list`/`rm` walk up
   the directory tree to find the nearest one (like `.git`).
 - **Encryption.** Values are sealed with AES-256-GCM. Names and namespaces
   are stored in plaintext (so `list` works without the key); only values are
