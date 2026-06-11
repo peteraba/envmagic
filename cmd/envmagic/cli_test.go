@@ -254,6 +254,75 @@ func TestImportAndExport(t *testing.T) {
 	}
 }
 
+// TestImportTemplate covers the --empty and --interactive import modes used to
+// populate the store from an example .env file.
+func TestImportTemplate(t *testing.T) {
+	run := setup(t)
+
+	// Template with a blank, a defaulted, and a quoted-default variable.
+	tmplContent := strings.Join([]string{
+		"# example env file",
+		"API_KEY=",
+		"DB_PORT=5432",
+		`DB_URL="postgres://localhost/dev"`,
+	}, "\n") + "\n"
+
+	tmplFile := filepath.Join(t.TempDir(), ".env.example")
+	if err := os.WriteFile(tmplFile, []byte(tmplContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// --empty stores every name with an empty value, ignoring defaults.
+	r := run("import", "--empty", tmplFile)
+	if r.code() != 0 {
+		t.Fatalf("import --empty: exit %d\nstderr: %s", r.code(), r.stderr)
+	}
+	if !strings.Contains(r.stderr, "imported 3 variable(s)") {
+		t.Errorf("import --empty: unexpected confirmation %q", r.stderr)
+	}
+	r = run()
+	for _, name := range []string{"API_KEY", "DB_PORT", "DB_URL"} {
+		want := `export ` + name + `=""`
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("import --empty: stdout %q does not contain %q", r.stdout, want)
+		}
+	}
+
+	// --interactive and --empty are mutually exclusive.
+	r = run("import", "--interactive", "--empty", tmplFile)
+	if r.code() != 2 {
+		t.Errorf("import -i --empty: expected exit 2, got %d", r.code())
+	}
+
+	// --interactive requires a FILE argument.
+	r = run("import", "--interactive")
+	if r.code() != 2 {
+		t.Errorf("import -i without FILE: expected exit 2, got %d", r.code())
+	}
+
+	// --interactive without a terminal fails and points at --empty.
+	r = run("import", "-i", tmplFile)
+	if r.code() == 0 {
+		t.Error("import -i without TTY: expected non-zero exit")
+	}
+	if !strings.Contains(r.err.Error(), "--empty") {
+		t.Errorf("import -i without TTY: expected hint about --empty, got %q", r.err)
+	}
+
+	// Malformed template lines are rejected with the line number.
+	badFile := filepath.Join(t.TempDir(), "bad.env")
+	if err := os.WriteFile(badFile, []byte("GOOD=1\nbroken line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = run("import", "--empty", badFile)
+	if r.code() == 0 {
+		t.Error("import --empty malformed: expected non-zero exit")
+	}
+	if !strings.Contains(r.err.Error(), "line 2") {
+		t.Errorf("import --empty malformed: expected line number in error, got %q", r.err)
+	}
+}
+
 // TestNamespaces verifies that entries in different namespaces are fully
 // isolated from each other.
 func TestNamespaces(t *testing.T) {

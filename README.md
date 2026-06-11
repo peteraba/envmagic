@@ -76,10 +76,33 @@ envmagic rm api_key
 # Import / export .env files
 envmagic import .env
 envmagic -n staging export staging.env
+
+# Populate the store from a template (.env.example): fill in each value
+# in an interactive form, with the template's values pre-filled as defaults
+envmagic import -i .env.example
+
+# Or just scaffold the namespace: store every name with an empty value
+envmagic import --empty .env.example
 ```
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
 `API_KEY`.
+
+### Importing from a template
+
+Projects often ship a `.env.example` listing the variables they need, with
+defaults where they exist (`DB_PORT=5432`) and blanks where they don't
+(`API_KEY=`). `envmagic import --interactive` (or `-i`) parses such a file and
+walks you through a form with one field per variable; pressing Enter keeps the
+template's value, and fields whose names look secret (containing `KEY`,
+`SECRET`, `TOKEN`, `PASSWORD`, or `PASS`) are masked while you type.
+
+`envmagic import --empty` skips the form and stores an empty value for every
+name — template defaults are ignored — which is handy for scaffolding a
+namespace non-interactively.
+
+In all modes, importing a name that already exists overwrites the stored
+value.
 
 ## Backing up the encryption key
 
@@ -144,6 +167,8 @@ writing, so a truncated backup is rejected before it overwrites anything.
 | `envmagic [-n NS] rm NAME`               | Remove a stored entry                             |
 | `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file (stdout if omitted) |
 | `envmagic [-n NS] import [FILE]`         | Import a `.env` file into a namespace (stdin if omitted) |
+| `envmagic [-n NS] import -i FILE`        | Fill values in an interactive form (template values as defaults) |
+| `envmagic [-n NS] import --empty [FILE]` | Store an empty value for every name in the file   |
 | `envmagic key`                           | Show the key file path and base64-encoded content |
 | `envmagic key --set <base64>`            | Restore the key from a base64 string              |
 | `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                   |
