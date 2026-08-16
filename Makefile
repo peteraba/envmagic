@@ -1,13 +1,19 @@
 BINARY  := envmagic
 GOBIN   := $(shell go env GOPATH)/bin
 
-.PHONY: build install lint test version tag release
+.PHONY: build install install-tools lint test version tag release
 
 build:
 	go build -o $(BINARY) ./cmd/envmagic
 
 install:
 	go install ./cmd/envmagic
+
+install-tools:
+	go install mvdan.cc/gofumpt@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install golang.org/x/vuln/cmd/govulncheck@latest
+	go install github.com/goreleaser/goreleaser/v2@latest
 
 lint:
 	gofumpt -w .

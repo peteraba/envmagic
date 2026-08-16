@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 
 	"github.com/peteraba/envmagic/internal"
@@ -61,14 +62,28 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 }
 
 // cmdImport reads NAME=value lines from a file or stdin and stores them in the active store under the given namespace.
+// With --empty every variable is stored with an empty value; with --interactive the
+// user is walked through a form to fill in each value, file values pre-filled as defaults.
 func cmdImport(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() > 1 {
-		return cli.Exit("usage: envmagic import [-n NS] [FILE]", 2)
+		return cli.Exit("usage: envmagic import [-n NS] [-i|--empty] [FILE]", 2)
 	}
+	interactive := cmd.Bool("interactive")
+	empty := cmd.Bool("empty")
+	if interactive && empty {
+		return cli.Exit("envmagic import: --interactive and --empty are mutually exclusive", 2)
+	}
+
 	ns := cmd.String("namespace")
 	var inPath string
 	if cmd.NArg() == 1 {
 		inPath = cmd.Args().First()
+	}
+	if interactive && inPath == "" {
+		return cli.Exit("envmagic import: --interactive requires a FILE argument", 2)
+	}
+	if inPath == "" && isatty.IsTerminal(os.Stdin.Fd()) {
+		return cli.Exit("envmagic import: provide a FILE or pipe .env content on stdin", 2)
 	}
 
 	var r io.Reader = os.Stdin
@@ -90,6 +105,34 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
+	switch {
+	case empty:
+		for i := range kvs {
+			kvs[i][1] = ""
+		}
+	case interactive:
+		if err := promptForValues(kvs); err != nil {
+			return err
+		}
+	}
+
+	if err := storeAll(ns, kvs); err != nil {
+		return err
+	}
+
+	src := "stdin"
+	if inPath != "" {
+		src = inPath
+	}
+
+	fmt.Fprintf(os.Stderr, "envmagic: imported %d variable(s) from %s into namespace %q\n", len(kvs), src, ns)
+
+	return nil
+}
+
+// storeAll encrypts and stores all kvs in the active store under the given namespace,
+// creating the store if needed. Existing entries are overwritten.
+func storeAll(ns string, kvs [][2]string) error {
 	dbPath, err := findOrCreateStorePath()
 	if err != nil {
 		return err
@@ -115,13 +158,6 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 			return errorf("write %s: %v", kv[0], err)
 		}
 	}
-
-	src := "stdin"
-	if inPath != "" {
-		src = inPath
-	}
-
-	fmt.Fprintf(os.Stderr, "envmagic: imported %d variable(s) from %s into namespace %q\n", len(kvs), src, ns)
 
 	return nil
 }

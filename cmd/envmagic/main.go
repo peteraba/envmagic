@@ -15,7 +15,7 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-const version = "v0.4.0"
+const version = "v0.5.0"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
@@ -67,7 +67,18 @@ func newApp() *cli.Command {
 				Name:      "import",
 				Usage:     "import a .env file into namespace (stdin if omitted)",
 				ArgsUsage: "[FILE]",
-				Action:    cmdImport,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:    "interactive",
+						Aliases: []string{"i"},
+						Usage:   "prompt for each value in a form (file values pre-filled as defaults)",
+					},
+					&cli.BoolFlag{
+						Name:  "empty",
+						Usage: "store an empty value for every variable",
+					},
+				},
+				Action: cmdImport,
 			},
 			{
 				Name:      "shell-init",

@@ -28,7 +28,7 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
     case "$1" in
-        shell-init|key|list|ls|export|help|--help|-h|--version|-v)
+        shell-init|key|list|ls|export|import|help|--help|-h|--version|-v)
             command envmagic "$@"
             return $?
             ;;
@@ -40,7 +40,10 @@ envmagic() {
         return $_envmagic_rc
     fi
     if [ -n "$_envmagic_out" ]; then
-        eval "$_envmagic_out"
+        eval "$_envmagic_out" || return $?
+        if [ "$#" -eq 0 ]; then
+            echo 'envmagic: environment variables set' >&2
+        fi
     fi
 }
 `
@@ -48,7 +51,7 @@ envmagic() {
 const shellInitFish = `# envmagic shell integration - load with: envmagic shell-init fish | source
 function envmagic
     switch "$argv[1]"
-        case shell-init key list ls export help --help -h --version -v
+        case shell-init key list ls export import help --help -h --version -v
             command envmagic $argv
             return $status
     end
@@ -59,6 +62,10 @@ function envmagic
     end
     if test -n "$_envmagic_out"
         eval "$_envmagic_out"
+        or return $status
+        if test (count $argv) -eq 0
+            echo 'envmagic: environment variables set' >&2
+        end
     end
 end
 `
