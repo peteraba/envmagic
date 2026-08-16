@@ -40,7 +40,10 @@ envmagic() {
         return $_envmagic_rc
     fi
     if [ -n "$_envmagic_out" ]; then
-        eval "$_envmagic_out"
+        eval "$_envmagic_out" || return $?
+        if [ "$#" -eq 0 ]; then
+            echo 'envmagic: environment variables set' >&2
+        fi
     fi
 }
 `
@@ -59,6 +62,10 @@ function envmagic
     end
     if test -n "$_envmagic_out"
         eval "$_envmagic_out"
+        or return $status
+        if test (count $argv) -eq 0
+            echo 'envmagic: environment variables set' >&2
+        end
     end
 end
 `

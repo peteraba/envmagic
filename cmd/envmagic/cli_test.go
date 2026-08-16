@@ -323,6 +323,21 @@ func TestImportTemplate(t *testing.T) {
 	}
 }
 
+func TestDefaultDescription(t *testing.T) {
+	if got := defaultDescription("secret-value", true); got != "(default set)" {
+		t.Fatalf("secret default: got %q", got)
+	}
+	if got := defaultDescription("5432", false); got != "default: 5432" {
+		t.Fatalf("ordinary default: got %q", got)
+	}
+	if got := defaultDescription("", false); got != "(no default)" {
+		t.Fatalf("empty default: got %q", got)
+	}
+	if !looksSecret("DB_PASSWORD") {
+		t.Fatal("PASSWORD should still be recognized via PASS")
+	}
+}
+
 // TestNamespaces verifies that entries in different namespaces are fully
 // isolated from each other.
 func TestNamespaces(t *testing.T) {
@@ -390,6 +405,9 @@ func TestShellInit(t *testing.T) {
 	if !strings.Contains(bash.stdout, "envmagic()") {
 		t.Errorf("posix init: expected 'envmagic()' function definition, got %q", bash.stdout)
 	}
+	if !strings.Contains(bash.stdout, "envmagic: environment variables set") {
+		t.Errorf("posix init: expected load confirmation, got %q", bash.stdout)
+	}
 
 	fish := run("shell-init", "fish")
 	if fish.code() != 0 {
@@ -397,6 +415,9 @@ func TestShellInit(t *testing.T) {
 	}
 	if !strings.Contains(fish.stdout, "function envmagic") {
 		t.Errorf("fish init: expected 'function envmagic', got %q", fish.stdout)
+	}
+	if !strings.Contains(fish.stdout, "envmagic: environment variables set") {
+		t.Errorf("fish init: expected load confirmation, got %q", fish.stdout)
 	}
 	if fish.stdout == bash.stdout {
 		t.Error("fish init should differ from POSIX init")

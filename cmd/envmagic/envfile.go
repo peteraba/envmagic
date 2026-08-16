@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 
 	"github.com/peteraba/envmagic/internal"
@@ -80,6 +81,9 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 	}
 	if interactive && inPath == "" {
 		return cli.Exit("envmagic import: --interactive requires a FILE argument", 2)
+	}
+	if inPath == "" && isatty.IsTerminal(os.Stdin.Fd()) {
+		return cli.Exit("envmagic import: provide a FILE or pipe .env content on stdin", 2)
 	}
 
 	var r io.Reader = os.Stdin

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 // promptForValues walks the user through a TUI form with one input per variable,
 // editing the values in kvs in place. Each field is pre-filled with the parsed
 // value so Enter keeps it as the default.
+// Each input gets its own group (page) so the variable name and default stay
+// visible while editing; a single group scrolls and pushes them out of view.
 // The form renders to stderr: the shell-init wrapper captures stdout in a command
 // substitution, which would make a stdout-rendered form invisible.
 func promptForValues(kvs [][2]string) error {
@@ -21,23 +24,20 @@ func promptForValues(kvs [][2]string) error {
 		return errorf("--interactive requires a terminal; use --empty or a plain import instead")
 	}
 
-	fields := make([]huh.Field, len(kvs))
+	groups := make([]*huh.Group, len(kvs))
 	for i := range kvs {
-		desc := "(no default)"
-		if kvs[i][1] != "" {
-			desc = "default: " + kvs[i][1]
-		}
+		isSecret := looksSecret(kvs[i][0])
 		input := huh.NewInput().
-			Title(kvs[i][0]).
-			Description(desc).
+			Title(fmt.Sprintf("%s (%d/%d)", kvs[i][0], i+1, len(kvs))).
+			Description(defaultDescription(kvs[i][1], isSecret)).
 			Value(&kvs[i][1])
-		if looksSecret(kvs[i][0]) {
+		if isSecret {
 			input = input.EchoMode(huh.EchoModePassword)
 		}
-		fields[i] = input
+		groups[i] = huh.NewGroup(input)
 	}
 
-	form := huh.NewForm(huh.NewGroup(fields...)).WithOutput(os.Stderr)
+	form := huh.NewForm(groups...).WithOutput(os.Stderr)
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return cli.Exit("envmagic: aborted", 1)
@@ -48,10 +48,20 @@ func promptForValues(kvs [][2]string) error {
 	return nil
 }
 
+func defaultDescription(value string, secret bool) string {
+	if value == "" {
+		return "(no default)"
+	}
+	if secret {
+		return "(default set)"
+	}
+	return "default: " + value
+}
+
 // looksSecret reports whether the (uppercase) variable name suggests a secret
 // whose input should be masked.
 func looksSecret(name string) bool {
-	for _, marker := range []string{"KEY", "SECRET", "TOKEN", "PASSWORD", "PASS"} {
+	for _, marker := range []string{"KEY", "SECRET", "TOKEN", "PASS"} {
 		if strings.Contains(name, marker) {
 			return true
 		}
