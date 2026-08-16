@@ -9,6 +9,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ErrEntryNotFound is returned by Store.Get when no row exists for the
+// namespace and name.
+var ErrEntryNotFound = errors.New("envmagic: entry not found")
+
 // Store is a SQLite-backed encrypted variable store.
 type Store struct {
 	db *sql.DB
@@ -79,7 +83,7 @@ func (s *Store) Get(namespace, name string) ([]byte, error) {
 		namespace, name,
 	).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("entry not found, namespace: %s, name: %s", namespace, name)
+		return nil, ErrEntryNotFound
 	}
 
 	return data, err

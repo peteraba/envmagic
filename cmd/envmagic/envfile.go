@@ -116,7 +116,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if err := storeAll(ns, kvs); err != nil {
+	if err := storeAll(cmd, ns, kvs); err != nil {
 		return err
 	}
 
@@ -132,13 +132,13 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 
 // storeAll encrypts and stores all kvs in the active store under the given namespace,
 // creating the store if needed. Existing entries are overwritten.
-func storeAll(ns string, kvs [][2]string) error {
-	dbPath, err := findOrCreateStorePath()
+func storeAll(cmd *cli.Command, ns string, kvs [][2]string) error {
+	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
 	}
 
-	key, err := internal.LoadOrCreateKey()
+	key, err := loadKey()
 	if err != nil {
 		return errorf("load key: %v", err)
 	}
