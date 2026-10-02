@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"io"
 	"os"
 	"os/exec"
@@ -181,6 +182,104 @@ func TestSetAndGet(t *testing.T) {
 		if r = run("get", name); r.code() != 0 || r.stdout != "reserved\n" {
 			t.Errorf("get %s: stdout=%q err=%v", name, r.stdout, r.err)
 		}
+	}
+}
+
+func TestSetRejectsNUL(t *testing.T) {
+	run := setup(t)
+
+	r := run("set", "name", "a\x00b")
+	if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for NAME contains a NUL byte" {
+		t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	if r = run("list"); r.code() != 0 || r.stdout != "" {
+		t.Errorf("list after rejected set: stdout=%q err=%v", r.stdout, r.err)
+	}
+}
+
+func TestImportRejectsNUL(t *testing.T) {
+	for _, source := range []string{"file", "stdin"} {
+		t.Run(source, func(t *testing.T) {
+			run := setup(t)
+			path := filepath.Join(t.TempDir(), "input.env")
+			if err := os.WriteFile(path, []byte("GOOD=valid\nBAD=a\x00b\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"import", path}
+			if source == "stdin" {
+				input, err := os.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				origIn := os.Stdin
+				os.Stdin = input
+				t.Cleanup(func() {
+					os.Stdin = origIn
+					_ = input.Close()
+				})
+				args = []string{"import"}
+			}
+			r := run(args...)
+			if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for BAD contains a NUL byte" {
+				t.Fatalf("import: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+			if r = run("list"); r.code() != 0 || r.stdout != "" {
+				t.Errorf("list after rejected import: stdout=%q err=%v", r.stdout, r.err)
+			}
+		})
+	}
+}
+
+func TestEmitRejectsStoredNUL(t *testing.T) {
+	run := setup(t)
+	if r := run("set", "A_GOOD", "valid"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := internal.Encrypt(key, []byte("a\x00b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("INSERT INTO env_vars (namespace, name, value) VALUES (?, ?, ?)", "default", "Z_BAD", enc); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"load"},
+		{"load", "Z_BAD"},
+		{"--debug", "load"},
+		{"--debug", "load", "Z_BAD"},
+		{"export"},
+	} {
+		r := run(args...)
+		if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for Z_BAD contains a NUL byte" {
+			t.Errorf("%v: exit=%d stdout=%q err=%v", args, r.code(), r.stdout, r.err)
+		}
+		if r.stderr != "" {
+			t.Errorf("%v: stderr=%q, want no partial exports", args, r.stderr)
+		}
+	}
+	if r := run("get", "Z_BAD"); r.code() != 0 || r.stdout != "a\x00b\n" {
+		t.Errorf("raw get: stdout=%q err=%v", r.stdout, r.err)
+	}
+
+	path := filepath.Join(t.TempDir(), "output.env")
+	if err := os.WriteFile(path, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("export", path); r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for Z_BAD contains a NUL byte" {
+		t.Errorf("export file: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != "unchanged\n" {
+		t.Errorf("rejected export changed file: content=%q err=%v", content, err)
 	}
 }
 
