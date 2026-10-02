@@ -95,6 +95,20 @@ func TestOpenStoreSpecialPathsPersist(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = store.Close() })
+			var journalMode string
+			if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+				t.Fatal(err)
+			}
+			if journalMode != "wal" {
+				t.Errorf("journal_mode = %q, want wal", journalMode)
+			}
+			var foreignKeys int
+			if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+				t.Fatal(err)
+			}
+			if foreignKeys != 1 {
+				t.Errorf("foreign_keys = %d, want 1", foreignKeys)
+			}
 			want := []byte("stored value")
 			if err := store.Set("default", "KEY", want); err != nil {
 				t.Fatal(err)
@@ -139,6 +153,20 @@ func TestOpenStoreRelativePathsPersist(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = store.Close() })
+			var journalMode string
+			if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+				t.Fatal(err)
+			}
+			if journalMode != "wal" {
+				t.Errorf("journal_mode = %q, want wal", journalMode)
+			}
+			var foreignKeys int
+			if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+				t.Fatal(err)
+			}
+			if foreignKeys != 1 {
+				t.Errorf("foreign_keys = %d, want 1", foreignKeys)
+			}
 			want := []byte("stored value")
 			if err := store.Set("default", "KEY", want); err != nil {
 				t.Fatal(err)
@@ -162,6 +190,21 @@ func TestOpenStoreRelativePathsPersist(t *testing.T) {
 				t.Fatalf("Get = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestOpenStoreRejectsNULPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path + "\x00suffix")
+	if store != nil {
+		_ = store.Close()
+		t.Error("OpenStore returned a store for a path containing NUL")
+	}
+	if err == nil {
+		t.Error("OpenStore returned no error for a path containing NUL")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("truncated path: stat error = %v, want file not to exist", err)
 	}
 }
 
