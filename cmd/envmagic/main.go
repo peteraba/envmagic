@@ -35,7 +35,7 @@ func newApp() *cli.Command {
 				Name:    "namespace",
 				Aliases: []string{"n"},
 				Value:   "default",
-				Usage:   "namespace",
+				Usage:   "a namespace",
 			},
 			&cli.BoolFlag{
 				Name:    "debug",
@@ -72,7 +72,7 @@ func newApp() *cli.Command {
 			{
 				Name:    "list",
 				Aliases: []string{"ls"},
-				Usage:   "list names stored in namespace",
+				Usage:   "list names stored in a namespace",
 				Action:  cmdList,
 			},
 			{
@@ -84,13 +84,13 @@ func newApp() *cli.Command {
 			},
 			{
 				Name:      "export",
-				Usage:     "export namespace to a .env file (stdout if omitted)",
+				Usage:     "export a namespace to a .env file (stdout if omitted)",
 				ArgsUsage: "[FILE]",
 				Action:    cmdExport,
 			},
 			{
 				Name:      "import",
-				Usage:     "import a .env file into namespace (stdin if omitted)",
+				Usage:     "import a .env file into a namespace (stdin if omitted)",
 				ArgsUsage: "[FILE]",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{
