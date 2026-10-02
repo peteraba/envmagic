@@ -4,7 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,12 +23,23 @@ type Store struct {
 
 // OpenStore opens (or creates) the SQLite database at path.
 func OpenStore(path string) (*Store, error) {
+	if strings.ContainsRune(path, 0) {
+		return nil, errors.New("database path contains a NUL byte")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve database path %s: %w", path, err)
+	}
 	created := false
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		created = true
 	}
 
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	p := filepath.ToSlash(absPath)
+	if filepath.VolumeName(absPath) != "" && p[0] != '/' {
+		p = "/" + p
+	}
+	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database, path: %s, error: %w", path, err)
@@ -47,6 +61,16 @@ func OpenStore(path string) (*Store, error) {
 	`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to create table, path: %s, error: %w", path, err)
+	}
+
+	var objects int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type NOT IN ('table','index')`).Scan(&objects); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to inspect schema, path: %s, error: %w", path, err)
+	}
+	if objects != 0 {
+		_ = db.Close()
+		return nil, fmt.Errorf("store %s contains triggers, views or other schema objects; refusing to open", path)
 	}
 
 	if created {
@@ -105,6 +129,9 @@ func (s *Store) List(namespace string) ([]string, error) {
 		if err := rows.Scan(&n); err != nil {
 			return nil, err
 		}
+		if !ValidName(n) {
+			return nil, fmt.Errorf("invalid variable name %q in store", n)
+		}
 		names = append(names, n)
 	}
 
@@ -142,6 +169,9 @@ func (s *Store) GetAll(namespace string) ([]Entry, error) {
 		var e Entry
 		if err := rows.Scan(&e.Name, &e.Enc); err != nil {
 			return nil, err
+		}
+		if !ValidName(e.Name) {
+			return nil, fmt.Errorf("invalid variable name %q in store", e.Name)
 		}
 		entries = append(entries, e)
 	}

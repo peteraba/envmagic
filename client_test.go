@@ -1,12 +1,34 @@
 package envmagic_test
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/peteraba/envmagic"
+	"github.com/peteraba/envmagic/internal"
 )
+
+func TestOpenWithPath_RelativePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	c, err := envmagic.OpenWithPath(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if _, err := os.Stat(filepath.Join(dir, ".envmagic")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(envmagic.DefaultNamespace, "MISSING_VAR"); !errors.Is(err, envmagic.ErrNotFound) {
+		t.Fatalf("Get: want ErrNotFound, got %v", err)
+	}
+}
 
 func TestOpenWithPath_KeyCreated(t *testing.T) {
 	xdg := t.TempDir()
@@ -69,5 +91,50 @@ func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 
 	if _, err := c.Get(envmagic.DefaultNamespace, "ANY"); !errors.Is(err, envmagic.ErrNotFound) {
 		t.Fatalf("Open cwd store: Get missing: %v", err)
+	}
+}
+
+func TestClient_Load_InvalidStoredName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	client, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := internal.Encrypt(key, []byte("loaded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	names := []string{"A_ENVMAGIC_LOAD_TEST", "Z_ENVMAGIC_LOAD_TEST\n"}
+	for _, name := range names {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES (?, ?, ?)`, envmagic.DefaultNamespace, name, encrypted); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loaded, err := client.Load(envmagic.DefaultNamespace)
+	want := fmt.Sprintf("invalid variable name %q in store", names[1])
+	if err == nil || !strings.Contains(err.Error(), want) || loaded != nil {
+		t.Errorf("Load: loaded=%v err=%v, want nil and %q", loaded, err, want)
+	}
+	for _, name := range names {
+		if value, exists := os.LookupEnv(name); exists {
+			t.Errorf("Load set %q to %q", name, value)
+		}
 	}
 }
