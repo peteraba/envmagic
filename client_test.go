@@ -1,6 +1,9 @@
 package envmagic_test
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -94,6 +97,127 @@ func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 	}
 }
 
+func TestClient_CiphertextBinding(t *testing.T) {
+	for _, tc := range []struct {
+		label     string
+		namespace string
+		name      string
+	}{
+		{"name", "dev", "ENVMAGIC_OTHER"},
+		{"namespace", "prd", "ENVMAGIC_TOKEN"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("ENVMAGIC_TOKEN", "unchanged")
+			t.Setenv(tc.name, "unchanged")
+			storePath := filepath.Join(t.TempDir(), ".envmagic")
+			client, err := envmagic.OpenWithPath(storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			key, _, err := internal.LoadOrCreateKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			for _, row := range [][3]string{
+				{"dev", "ENVMAGIC_TOKEN", "source secret"},
+				{tc.namespace, tc.name, "target secret"},
+			} {
+				enc, err := internal.Encrypt(key, []byte(row[2]), internal.AD(row[0], row[1]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES (?, ?, ?)`, row[0], row[1], enc); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, err := client.Get(tc.namespace, tc.name); err != nil || got != "target secret" {
+				t.Fatalf("Get before swap: got=%q err=%v", got, err)
+			}
+			if loaded, err := client.Load(tc.namespace); err != nil || len(loaded) == 0 || os.Getenv(tc.name) != "target secret" {
+				t.Fatalf("Load before swap: loaded=%v err=%v value=%q", loaded, err, os.Getenv(tc.name))
+			}
+			t.Setenv(tc.name, "unchanged")
+			res, err := db.Exec(`UPDATE env_vars SET value =
+				(SELECT value FROM env_vars WHERE namespace = 'dev' AND name = 'ENVMAGIC_TOKEN')
+				WHERE namespace = ? AND name = ?`, tc.namespace, tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n, err := res.RowsAffected(); err != nil || n != 1 {
+				t.Fatalf("swap: affected=%d err=%v", n, err)
+			}
+
+			if got, err := client.Get(tc.namespace, tc.name); err == nil || got != "" || !strings.Contains(err.Error(), "message authentication failed") {
+				t.Errorf("Get after swap: got=%q err=%v", got, err)
+			}
+			if loaded, err := client.Load(tc.namespace); err == nil || loaded != nil || !strings.Contains(err.Error(), "message authentication failed") {
+				t.Errorf("Load after swap: loaded=%v err=%v", loaded, err)
+			}
+			if got := os.Getenv(tc.name); got != "unchanged" {
+				t.Errorf("Load after swap changed target environment variable to %q", got)
+			}
+		})
+	}
+}
+
+func TestClient_LegacyCiphertext(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const name = "ENVMAGIC_LEGACY"
+	t.Setenv(name, "unchanged")
+	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	client, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	enc := gcm.Seal(nonce, nonce, []byte("legacy secret"), nil)
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES (?, ?, ?)`, envmagic.DefaultNamespace, name, enc); err != nil {
+		t.Fatal(err)
+	}
+
+	const hint = "or stored by an older envmagic; re-import it (see README)"
+	if got, err := client.Get(envmagic.DefaultNamespace, name); err == nil || got != "" || !strings.Contains(err.Error(), hint) {
+		t.Errorf("Get legacy: got=%q err=%v, want no value and hint %q", got, err, hint)
+	}
+	if got := os.Getenv(name); got != "unchanged" {
+		t.Errorf("Get legacy changed environment variable to %q", got)
+	}
+	if loaded, err := client.Load(envmagic.DefaultNamespace); err == nil || loaded != nil || !strings.Contains(err.Error(), hint) {
+		t.Errorf("Load legacy: loaded=%v err=%v, want no names and hint %q", loaded, err, hint)
+	}
+	if got := os.Getenv(name); got != "unchanged" {
+		t.Errorf("Load legacy changed environment variable to %q", got)
+	}
+}
+
 func TestClient_Load_InvalidStoredName(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
@@ -107,10 +231,6 @@ func TestClient_Load_InvalidStoredName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encrypted, err := internal.Encrypt(key, []byte("loaded"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	db, err := sql.Open("sqlite", storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -118,6 +238,10 @@ func TestClient_Load_InvalidStoredName(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	names := []string{"A_ENVMAGIC_LOAD_TEST", "Z_ENVMAGIC_LOAD_TEST\n"}
 	for _, name := range names {
+		encrypted, err := internal.Encrypt(key, []byte("loaded"), internal.AD(envmagic.DefaultNamespace, name))
+		if err != nil {
+			t.Fatal(err)
+		}
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)

@@ -304,7 +304,7 @@ func runSet(cmd *cli.Command, namespace, name, value string) error {
 		return errorf("load key: %v", err)
 	}
 
-	enc, err := internal.Encrypt(key, []byte(value))
+	enc, err := internal.Encrypt(key, []byte(value), internal.AD(namespace, name))
 	if err != nil {
 		return errorf("encrypt: %v", err)
 	}
@@ -340,9 +340,9 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 		return errorf("read: %v", err)
 	}
 
-	plain, err := internal.Decrypt(h.key, enc)
+	plain, err := internal.Decrypt(h.key, enc, internal.AD(namespace, name))
 	if err != nil {
-		return errorf("decrypt: %v (wrong key, or value was encrypted with a different key)", err)
+		return errorf("decrypt: %v (wrong key or stored by an older envmagic; re-import it (see README))", err)
 	}
 
 	line := string(plain)
@@ -375,9 +375,9 @@ func runSourceAll(namespace string, debug bool) error {
 
 	var output strings.Builder
 	for _, e := range entries {
-		plain, err := internal.Decrypt(h.key, e.Enc)
+		plain, err := internal.Decrypt(h.key, e.Enc, internal.AD(namespace, e.Name))
 		if err != nil {
-			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
+			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
 		if err := checkValue(e.Name, string(plain)); err != nil {
 			return err

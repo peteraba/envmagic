@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"io"
@@ -186,6 +189,115 @@ func TestSetAndGet(t *testing.T) {
 	}
 }
 
+func TestCiphertextBinding(t *testing.T) {
+	for _, tc := range []struct {
+		label     string
+		namespace string
+		name      string
+	}{
+		{"name", "dev", "Z_OTHER"},
+		{"namespace", "prd", "Z_TOKEN"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			run := setup(t)
+			for _, args := range [][]string{
+				{"-n", "dev", "set", "Z_TOKEN", "source secret"},
+				{"-n", tc.namespace, "set", "A_VALID", "safe"},
+				{"-n", tc.namespace, "set", tc.name, "target secret"},
+			} {
+				if r := run(args...); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+			}
+			commands := [][]string{
+				{"get", tc.name},
+				{"load", tc.name},
+				{"load"},
+				{"--debug", "load"},
+				{"export"},
+			}
+			for _, command := range commands {
+				args := append([]string{"-n", tc.namespace}, command...)
+				if r := run(args...); r.code() != 0 || r.stdout == "" {
+					t.Fatalf("before swap %v: stdout=%q err=%v", args, r.stdout, r.err)
+				}
+			}
+
+			db, err := sql.Open("sqlite", ".envmagic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			res, err := db.Exec(`UPDATE env_vars SET value =
+				(SELECT value FROM env_vars WHERE namespace = 'dev' AND name = 'Z_TOKEN')
+				WHERE namespace = ? AND name = ?`, tc.namespace, tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n, err := res.RowsAffected(); err != nil || n != 1 {
+				t.Fatalf("swap: affected=%d err=%v", n, err)
+			}
+
+			for _, command := range commands {
+				args := append([]string{"-n", tc.namespace}, command...)
+				r := run(args...)
+				if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || !strings.Contains(r.err.Error(), "message authentication failed") {
+					t.Errorf("after swap %v: exit=%d stdout=%q stderr=%q err=%v", args, r.code(), r.stdout, r.stderr, r.err)
+				}
+			}
+		})
+	}
+}
+
+func TestLegacyCiphertext(t *testing.T) {
+	run := setup(t)
+	if r := run("-n", "dev", "set", "A_VALID", "safe"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	enc := gcm.Seal(nonce, nonce, []byte("legacy secret"), nil)
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('dev', 'Z_LEGACY', ?)`, enc); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, command := range [][]string{{"get", "Z_LEGACY"}, {"load", "Z_LEGACY"}, {"load"}, {"export"}} {
+		args := append([]string{"-n", "dev"}, command...)
+		r := run(args...)
+		if r.code() != 1 || r.stdout != "" || r.err == nil {
+			t.Errorf("%v: exit=%d stdout=%q err=%v", args, r.code(), r.stdout, r.err)
+			continue
+		}
+		for _, hint := range []string{"wrong key", "or stored by an older envmagic; re-import it (see README)"} {
+			if !strings.Contains(r.err.Error(), hint) {
+				t.Errorf("%v: err=%v, want hint %q", args, r.err, hint)
+			}
+		}
+		if strings.ContainsAny(r.err.Error(), "\r\n") {
+			t.Errorf("%v: error is not one line: %q", args, r.err)
+		}
+	}
+}
+
 func TestSetRejectsNUL(t *testing.T) {
 	run := setup(t)
 
@@ -321,7 +433,7 @@ func TestEmitRejectsStoredNUL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enc, err := internal.Encrypt(key, []byte("a\x00b"))
+	enc, err := internal.Encrypt(key, []byte("a\x00b"), internal.AD("default", "Z_BAD"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,6 +609,37 @@ func TestImportAndExport(t *testing.T) {
 		if !strings.Contains(string(exported), name+"=") {
 			t.Errorf("exported file: missing %s", name)
 		}
+	}
+}
+
+func TestImportNamespaceBinding(t *testing.T) {
+	run := setup(t)
+	const value = "staging secret with spaces"
+	path := filepath.Join(t.TempDir(), "input.env")
+	if err := os.WriteFile(path, []byte("TOKEN="+value+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("-n", "staging", "import", path); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r := run("-n", "staging", "get", "TOKEN"); r.code() != 0 || r.stdout != value+"\n" {
+		t.Errorf("get imported value: stdout=%q err=%v", r.stdout, r.err)
+	}
+
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	res, err := db.Exec(`UPDATE env_vars SET namespace = 'default' WHERE namespace = 'staging' AND name = 'TOKEN'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("move: affected=%d err=%v", n, err)
+	}
+	if r := run("-n", "default", "get", "TOKEN"); r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "message authentication failed") {
+		t.Errorf("get moved ciphertext: stdout=%q err=%v", r.stdout, r.err)
 	}
 }
 
