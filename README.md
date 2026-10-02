@@ -176,8 +176,12 @@ set -o pipefail
 envmagic-old -n NS export | envmagic -n NS import
 ```
 
-The old export replaces bytes that are not valid UTF-8 with U+FFFD, and import
-refuses lines over 64 KiB. Set such values again by hand with the new build.
+The old export silently replaces bytes that are not valid UTF-8 with U+FFFD;
+set such values again by hand with the new build. Import refuses a namespace
+with a line over 64 KiB and imports nothing from it: re-import it without those
+names first (`envmagic-old -n NS export | grep -v '^NAME=' | envmagic -n NS import`),
+then set them by hand. If you already wrote a name with the new build, remove it
+with `envmagic -n NS rm NAME`, re-import, then set it again.
 
 After all stores and namespaces are re-imported successfully, delete `envmagic-old`.
 
