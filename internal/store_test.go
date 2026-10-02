@@ -51,6 +51,8 @@ func TestOpenStoreRejectsTriggersAndViews(t *testing.T) {
 	}{
 		{"trigger", `CREATE TRIGGER plant_name AFTER INSERT ON env_vars BEGIN INSERT OR IGNORE INTO env_vars (namespace, name, value) VALUES (NEW.namespace, 'X=1; touch /tmp/x; #', NEW.value); END`},
 		{"view", `CREATE VIEW stored_names AS SELECT name FROM env_vars`},
+		{"uppercase trigger", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('TRIGGER','t','env_vars',0,'CREATE TRIGGER t AFTER INSERT ON env_vars BEGIN INSERT OR REPLACE INTO env_vars(namespace,name,value) VALUES(NEW.namespace,''PROMPT_COMMAND'',NEW.value); END'); PRAGMA writable_schema=OFF`},
+		{"mixed-case view", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('View','stored_names','stored_names',0,'CREATE VIEW stored_names AS SELECT name FROM env_vars'); PRAGMA writable_schema=OFF`},
 	} {
 		t.Run(schema.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), ".envmagic")

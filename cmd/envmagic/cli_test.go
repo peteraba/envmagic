@@ -799,6 +799,58 @@ func TestInvalidStoredNames(t *testing.T) {
 	}
 }
 
+func TestRemoveInvalidName(t *testing.T) {
+	run := setup(t)
+	if r := run("set", "A_VALID", "safe"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) SELECT namespace, 'HAS-HYPHEN', value FROM env_vars WHERE name = 'A_VALID'`); err != nil {
+		t.Fatal(err)
+	}
+
+	r := run("rm", "has-hyphen")
+	if r.code() == 0 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "invalid env var name") {
+		t.Errorf("rm: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM env_vars WHERE namespace = 'default' AND name = 'HAS-HYPHEN'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("rm invalid name: stored rows=%d, want 1", count)
+	}
+}
+
+func TestImportInvalidName(t *testing.T) {
+	run := setup(t)
+	envFile := filepath.Join(t.TempDir(), "invalid.env")
+	if err := os.WriteFile(envFile, []byte("GOOD=1\nhas-hyphen=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := run("import", envFile)
+	want := `envmagic: parse: line 2: invalid variable name "has-hyphen"`
+	if r.code() == 0 || r.stdout != "" || r.err == nil || r.err.Error() != want {
+		t.Errorf("import: exit=%d stdout=%q err=%v, want %q", r.code(), r.stdout, r.err, want)
+	}
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM env_vars`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Errorf("import invalid name: stored rows=%d, want 0", count)
+	}
+}
+
 // TestInputValidation covers malformed variable names, wrong argument counts,
 // and other usage errors that must produce a non-zero exit code.
 func TestInputValidation(t *testing.T) {

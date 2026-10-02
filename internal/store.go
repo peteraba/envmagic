@@ -50,7 +50,7 @@ func OpenStore(path string) (*Store, error) {
 	}
 
 	var objects int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type IN ('trigger','view')`).Scan(&objects); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE lower(type) IN ('trigger','view')`).Scan(&objects); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to inspect schema, path: %s, error: %w", path, err)
 	}
