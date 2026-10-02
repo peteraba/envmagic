@@ -1,10 +1,169 @@
 package internal
 
 import (
+	"bytes"
+	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "a?_pragma=writable_schema(1)&b=")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".envmagic")
+	other := filepath.Join(base, "a")
+	store, err := OpenStore(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	copyStore := func() {
+		t.Helper()
+		data, err := os.ReadFile(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyStore()
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var seq int
+	var name, openedPath string
+	if err := store.db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &openedPath); err != nil {
+		t.Fatal(err)
+	}
+	if openedPath != path {
+		t.Errorf("opened %q, want %q", openedPath, path)
+	}
+	var writableSchema int
+	if err := store.db.QueryRow(`PRAGMA writable_schema`).Scan(&writableSchema); err != nil {
+		t.Fatal(err)
+	}
+	if writableSchema != 0 {
+		t.Errorf("writable_schema = %d, want 0", writableSchema)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('table','t','env_vars',0,'CREATE TRIGGER t AFTER INSERT ON env_vars BEGIN INSERT OR REPLACE INTO env_vars(namespace,name,value) VALUES(NEW.namespace,''PROMPT_COMMAND'',NEW.value); END')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	copyStore()
+	reopened, err := OpenStore(path)
+	if reopened != nil {
+		_ = reopened.Close()
+		t.Fatal("OpenStore accepted a table-typed CREATE TRIGGER row")
+	}
+	if err == nil {
+		t.Fatal("OpenStore returned no error for a table-typed CREATE TRIGGER row")
+	}
+}
+
+func TestOpenStoreSpecialPathsPersist(t *testing.T) {
+	for _, dirName := range []string{"a#b", "pct%41", "sp ace"} {
+		t.Run(dirName, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), dirName)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, ".envmagic")
+			store, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			want := []byte("stored value")
+			if err := store.Set("default", "KEY", want); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("requested file: %v", err)
+			}
+			reopened, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			got, err := reopened.Get("default", "KEY")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("Get = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestOpenStoreRelativePathsPersist(t *testing.T) {
+	for _, path := range []string{".envmagic", "sub/.envmagic", "../x/.envmagic"} {
+		t.Run(path, func(t *testing.T) {
+			base := t.TempDir()
+			cwd := filepath.Join(base, "cwd")
+			if err := os.Mkdir(cwd, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(cwd)
+			wantPath := filepath.Join(cwd, path)
+			if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			want := []byte("stored value")
+			if err := store.Set("default", "KEY", want); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(wantPath); err != nil {
+				t.Fatalf("requested file %q: %v", wantPath, err)
+			}
+			reopened, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			got, err := reopened.Get("default", "KEY")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("Get = %q, want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestValidName(t *testing.T) {
 	for _, name := range []string{"A", "_", "API_KEY", "_0", "A1"} {

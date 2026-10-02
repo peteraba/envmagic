@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,12 +22,20 @@ type Store struct {
 
 // OpenStore opens (or creates) the SQLite database at path.
 func OpenStore(path string) (*Store, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve database path %s: %w", path, err)
+	}
 	created := false
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		created = true
 	}
 
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	p := filepath.ToSlash(absPath)
+	if filepath.IsAbs(absPath) && filepath.VolumeName(absPath) != "" && p[0] != '/' {
+		p = "/" + p
+	}
+	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database, path: %s, error: %w", path, err)

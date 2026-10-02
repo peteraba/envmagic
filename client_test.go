@@ -13,6 +13,23 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
+func TestOpenWithPath_RelativePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	c, err := envmagic.OpenWithPath(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if _, err := os.Stat(filepath.Join(dir, ".envmagic")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(envmagic.DefaultNamespace, "MISSING_VAR"); !errors.Is(err, envmagic.ErrNotFound) {
+		t.Fatalf("Get: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestOpenWithPath_KeyCreated(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
