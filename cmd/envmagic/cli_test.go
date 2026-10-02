@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -103,8 +104,7 @@ func setupBare(t *testing.T) func(args ...string) result {
 	}
 }
 
-// TestSetAndGet covers the implicit get/set syntax, name uppercasing, the
-// --debug flag, overwrites, and the error case for a missing variable.
+// TestSetAndGet covers explicit and implicit syntax, raw values, and load exports.
 func TestSetAndGet(t *testing.T) {
 	run := setup(t)
 
@@ -117,23 +117,45 @@ func TestSetAndGet(t *testing.T) {
 		t.Errorf("set: expected confirmation in stderr, got %q", r.stderr)
 	}
 
-	// Get emits an eval-ready export statement on stdout.
+	// The implicit get prints only the raw value.
 	r = run("api_key")
 	if r.code() != 0 {
 		t.Fatalf("get: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	want := `export API_KEY="sk-test-abc"`
-	if !strings.Contains(r.stdout, want) {
-		t.Errorf("get: stdout %q does not contain %q", r.stdout, want)
+	want := "sk-test-abc\n"
+	if r.stdout != want {
+		t.Errorf("get: stdout %q, want %q", r.stdout, want)
 	}
 
-	// --debug additionally echoes the export line to stderr.
-	r = run("--debug", "api_key")
-	if r.code() != 0 {
-		t.Fatalf("get --debug: exit %d\nstderr: %s", r.code(), r.stderr)
+	value := `spaces "quotes" $cash`
+	r = run("set", "api_key", value)
+	if r.code() != 0 || r.stdout != "" || !strings.Contains(r.stderr, "stored API_KEY") {
+		t.Fatalf("set: exit %d stdout=%q stderr=%q", r.code(), r.stdout, r.stderr)
 	}
-	if !strings.Contains(r.stderr, "export API_KEY=") {
-		t.Errorf("get --debug: expected export in stderr, got %q", r.stderr)
+	for _, args := range [][]string{
+		{"get", "api_key"},
+		{"api_key"},
+		{"--debug", "get", "api_key"},
+		{"--debug", "api_key"},
+	} {
+		r = run(args...)
+		if r.code() != 0 || r.stdout != value+"\n" || r.stderr != "" {
+			t.Errorf("%v: exit=%d stdout=%q stderr=%q", args, r.code(), r.stdout, r.stderr)
+		}
+	}
+
+	want = "export API_KEY=\"spaces \\\"quotes\\\" \\$cash\"\n"
+	for _, debug := range []bool{false, true} {
+		args := []string{"load", "api_key"}
+		wantErr := ""
+		if debug {
+			args = append([]string{"--debug"}, args...)
+			wantErr = want
+		}
+		r = run(args...)
+		if r.code() != 0 || r.stdout != want || r.stderr != wantErr {
+			t.Errorf("%v: exit=%d stdout=%q stderr=%q", args, r.code(), r.stdout, r.stderr)
+		}
 	}
 
 	// Overwriting a key replaces the stored value.
@@ -144,9 +166,21 @@ func TestSetAndGet(t *testing.T) {
 	}
 
 	// Getting a variable that was never set is an error.
-	r = run("no_such_var")
-	if r.code() == 0 {
-		t.Error("get missing: expected non-zero exit")
+	for _, args := range [][]string{{"no_such_var"}, {"get", "no_such_var"}, {"load", "no_such_var"}} {
+		r = run(args...)
+		if r.code() != 1 || r.stdout != "" || r.err.Error() != `envmagic: NO_SUCH_VAR not found in namespace "default"` {
+			t.Errorf("%v: exit=%d stdout=%q err=%v", args, r.code(), r.stdout, r.err)
+		}
+	}
+
+	// Explicit get can read names that match subcommands.
+	for _, name := range []string{"get", "set", "load", "list", "key"} {
+		if r = run("set", name, "reserved"); r.code() != 0 {
+			t.Fatalf("set %s: %v", name, r.err)
+		}
+		if r = run("get", name); r.code() != 0 || r.stdout != "reserved\n" {
+			t.Errorf("get %s: stdout=%q err=%v", name, r.stdout, r.err)
+		}
 	}
 }
 
@@ -375,12 +409,16 @@ func TestNamespaces(t *testing.T) {
 	run := setup(t)
 
 	// Same key name in two namespaces holds independent values.
-	run("-n", "dev", "db_url", "postgres://dev-host/devdb")
+	run("-n", "dev", "set", "db_url", "postgres://dev-host/devdb")
 	run("-n", "prod", "db_url", "postgres://prod-host/proddb")
 
-	r := run("-n", "dev", "db_url")
-	if !strings.Contains(r.stdout, "dev-host") {
+	r := run("-n", "dev", "get", "db_url")
+	if r.code() != 0 || r.stdout != "postgres://dev-host/devdb\n" {
 		t.Errorf("dev get: expected dev-host, stdout=%q", r.stdout)
+	}
+	r = run("-n", "dev", "load", "db_url")
+	if r.code() != 0 || r.stdout != "export DB_URL=\"postgres://dev-host/devdb\"\n" {
+		t.Errorf("dev load: stdout=%q err=%v", r.stdout, r.err)
 	}
 
 	r = run("-n", "prod", "db_url")
@@ -439,8 +477,10 @@ func TestShellInit(t *testing.T) {
 	if !strings.Contains(bash.stdout, "envmagic: environment variables set") {
 		t.Errorf("posix init: expected load confirmation, got %q", bash.stdout)
 	}
-	if !strings.Contains(bash.stdout, "import|rm|") {
-		t.Errorf("posix init: expected import and rm in shell-init bypass case, got %q", bash.stdout)
+	for _, want := range []string{`for _envmagic_arg in "$@"`, "-n|--namespace)", "-h|--help|-v|--version)", `"$_envmagic_command" != load`} {
+		if !strings.Contains(bash.stdout, want) {
+			t.Errorf("posix init: missing %q", want)
+		}
 	}
 
 	fish := run("shell-init", "fish")
@@ -456,6 +496,11 @@ func TestShellInit(t *testing.T) {
 	if fish.stdout == bash.stdout {
 		t.Error("fish init should differ from POSIX init")
 	}
+	for _, want := range []string{"for _envmagic_arg in $argv", "case -n --namespace", "case -h --help -v --version", `"$_envmagic_command" != load`} {
+		if !strings.Contains(fish.stdout, want) {
+			t.Errorf("fish init: missing %q", want)
+		}
+	}
 
 	// Unknown shell is an error.
 	r := run("shell-init", "powershell")
@@ -467,6 +512,83 @@ func TestShellInit(t *testing.T) {
 	r = run("shell-init")
 	if r.code() == 0 {
 		t.Error("shell-init no args: expected non-zero exit")
+	}
+}
+
+func TestShellWrapper(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is not on PATH")
+	}
+	binDir := t.TempDir()
+	build := exec.Command("go", "build", "-o", filepath.Join(binDir, "envmagic"), "./")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build envmagic: %v\n%s", err, out)
+	}
+	help, err := exec.Command(filepath.Join(binDir, "envmagic"), "--help").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadHelp, err := exec.Command(filepath.Join(binDir, "envmagic"), "load", "--help").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			path, err := exec.LookPath(shell)
+			if err != nil {
+				t.Skip(shell + " is not on PATH")
+			}
+			run := setup(t)
+			value := `raw "quotes" $cash`
+			for _, args := range [][]string{
+				{"set", "name", value},
+				{"-n", "staging", "set", "name", "staging value"},
+				{"-n", "staging", "set", "other", "second value"},
+			} {
+				if r := run(args...); r.code() != 0 {
+					t.Fatalf("seed %v: %v", args, r.err)
+				}
+			}
+			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
+			if shell == "fish" {
+				init = "envmagic shell-init fish | source\n"
+			}
+			for _, tc := range []struct {
+				command string
+				want    string
+				confirm bool
+			}{
+				{`envmagic -n staging list`, "NAME\nOTHER\n", false},
+				{`envmagic --namespace staging list`, "NAME\nOTHER\n", false},
+				{`envmagic --namespace=staging list`, "NAME\nOTHER\n", false},
+				{`envmagic get NAME`, value + "\n", false},
+				{`envmagic NAME`, value + "\n", false},
+				{`envmagic load NAME; printf %s "$NAME"`, value, false},
+				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", false},
+				{`envmagic; printf %s "$NAME"`, value, true},
+				{`envmagic -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", true},
+				{`envmagic --namespace staging; printf %s "$NAME"`, "staging value", true},
+				{`envmagic --namespace=staging; printf %s "$NAME"`, "staging value", true},
+				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", false},
+				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", false},
+				{`envmagic -n staging --help`, string(help), false},
+				{`envmagic -n staging -h`, string(help), false},
+				{`envmagic load --help`, string(loadHelp), false},
+			} {
+				cmd := exec.Command(path, "-c", init+tc.command)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				if err != nil || string(out) != tc.want {
+					t.Errorf("%s: err=%v stdout=%q want=%q stderr=%q", tc.command, err, out, tc.want, stderr.String())
+				}
+				if got := strings.Contains(stderr.String(), "envmagic: environment variables set"); got != tc.confirm {
+					t.Errorf("%s: load confirmation=%t, want %t; stderr=%q", tc.command, got, tc.confirm, stderr.String())
+				}
+			}
+		})
 	}
 }
 
@@ -566,20 +688,31 @@ func TestImportCreatesStoreWithEnvNonInteractive(t *testing.T) {
 }
 
 func TestSetCreatesStoreWithYes(t *testing.T) {
-	run := setupBare(t)
-	r := run("--yes", "foo_key", "bar")
-	if r.code() != 0 {
-		t.Fatalf("set --yes: exit %d stderr=%q", r.code(), r.stderr)
-	}
-	if !strings.Contains(r.stderr, "BACK THIS FILE UP") {
-		t.Fatalf("set --yes: missing key backup warning in stderr=%q", r.stderr)
-	}
-	if _, err := os.Stat(".envmagic"); err != nil {
-		t.Fatalf("expected .envmagic: %v", err)
-	}
-	r = run("foo_key")
-	if r.code() != 0 || !strings.Contains(r.stdout, "bar") {
-		t.Fatalf("get: exit=%d stdout=%q", r.code(), r.stdout)
+	for _, args := range [][]string{
+		{"--yes", "foo_key", "bar"},
+		{"--yes", "set", "foo_key", "bar"},
+		{"set", "foo_key", "bar"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setupBare(t)
+			if args[0] == "set" {
+				t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
+			}
+			r := run(args...)
+			if r.code() != 0 {
+				t.Fatalf("set: exit %d stderr=%q", r.code(), r.stderr)
+			}
+			if !strings.Contains(r.stderr, "BACK THIS FILE UP") {
+				t.Fatalf("set: missing key backup warning in stderr=%q", r.stderr)
+			}
+			if _, err := os.Stat(".envmagic"); err != nil {
+				t.Fatalf("expected .envmagic: %v", err)
+			}
+			r = run("get", "foo_key")
+			if r.code() != 0 || r.stdout != "bar\n" {
+				t.Fatalf("get: exit=%d stdout=%q", r.code(), r.stdout)
+			}
+		})
 	}
 }
 
@@ -590,9 +723,25 @@ func TestInputValidation(t *testing.T) {
 
 	// Variable names must match [A-Z_][A-Z0-9_]*.
 	for _, badName := range []string{"123start", "has-hyphen", "has space", "has.dot"} {
-		r := run(badName, "value")
-		if r.code() == 0 {
-			t.Errorf("invalid name %q: expected non-zero exit", badName)
+		for _, args := range [][]string{{badName, "value"}, {"get", badName}, {"load", badName}, {"set", badName, "value"}} {
+			r := run(args...)
+			if r.code() != 2 {
+				t.Errorf("invalid name %v: expected exit 2, got %d", args, r.code())
+			}
+		}
+	}
+	for _, args := range [][]string{
+		{"get"},
+		{"get", "name", "extra"},
+		{"load"},
+		{"load", "name", "extra"},
+		{"set"},
+		{"set", "name"},
+		{"set", "name", "value", "extra"},
+	} {
+		r := run(args...)
+		if r.code() != 2 || !strings.HasPrefix(r.err.Error(), "usage: envmagic "+args[0]) {
+			t.Errorf("%v: expected usage error with exit 2, got exit=%d err=%v", args, r.code(), r.err)
 		}
 	}
 

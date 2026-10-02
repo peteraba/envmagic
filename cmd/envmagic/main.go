@@ -40,7 +40,7 @@ func newApp() *cli.Command {
 			&cli.BoolFlag{
 				Name:    "debug",
 				Aliases: []string{"d"},
-				Usage:   "echo export to stderr (get only)",
+				Usage:   "echo export to stderr (load or no positional arguments)",
 			},
 			&cli.BoolFlag{
 				Name:    "yes",
@@ -51,6 +51,24 @@ func newApp() *cli.Command {
 		},
 		Action: cmdDefault,
 		Commands: []*cli.Command{
+			{
+				Name:      "get",
+				Usage:     "print a decrypted value",
+				ArgsUsage: "NAME",
+				Action:    cmdDefault,
+			},
+			{
+				Name:      "set",
+				Usage:     "store a value",
+				ArgsUsage: "NAME VALUE",
+				Action:    cmdDefault,
+			},
+			{
+				Name:      "load",
+				Usage:     "print an export statement for a value",
+				ArgsUsage: "NAME",
+				Action:    cmdDefault,
+			},
 			{
 				Name:    "list",
 				Aliases: []string{"ls"},
@@ -166,9 +184,20 @@ type handle struct {
 
 func (h *handle) close() error { return h.s.Close() }
 
-// cmdDefault handles the implicit `envmagic [-n NS] [-d] [NAME [VALUE]]` syntax.
+// cmdDefault handles get/set/load and the implicit `envmagic [-n NS] [-d] [NAME [VALUE]]` syntax.
 // With no positional arguments it sources (exports) the entire namespace.
 func cmdDefault(_ context.Context, cmd *cli.Command) error {
+	switch cmd.Name {
+	case "get", "load":
+		if cmd.NArg() != 1 {
+			return cli.Exit(fmt.Sprintf("usage: envmagic %s [-n NS] NAME", cmd.Name), 2)
+		}
+	case "set":
+		if cmd.NArg() != 2 {
+			return cli.Exit("usage: envmagic set [-n NS] NAME VALUE", 2)
+		}
+	}
+
 	ns := cmd.String("namespace")
 	debug := cmd.Bool("debug")
 
@@ -184,7 +213,7 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 
 	switch cmd.NArg() {
 	case 1:
-		return runGet(ns, name, debug)
+		return runGet(cmd, ns, name)
 	case 2:
 		return runSet(cmd, ns, name, cmd.Args().Get(1))
 	default:
@@ -284,8 +313,8 @@ func runSet(cmd *cli.Command, namespace, name, value string) error {
 	return nil
 }
 
-// runGet retrieves the given name from the active store and prints an export statement for it.
-func runGet(namespace, name string, debug bool) error {
+// runGet prints the decrypted value, or an export statement for load.
+func runGet(cmd *cli.Command, namespace, name string) error {
 	h, err := openActiveHandle()
 	if err != nil {
 		return err
@@ -305,11 +334,14 @@ func runGet(namespace, name string, debug bool) error {
 		return errorf("decrypt: %v (wrong key, or value was encrypted with a different key)", err)
 	}
 
-	line := fmt.Sprintf("export %s=%s", name, shellQuote(string(plain)))
-	fmt.Println(line)
-	if debug {
-		fmt.Fprintln(os.Stderr, line)
+	line := string(plain)
+	if cmd.Name == "load" {
+		line = fmt.Sprintf("export %s=%s", name, shellQuote(line))
+		if cmd.Bool("debug") {
+			fmt.Fprintln(os.Stderr, line)
+		}
 	}
+	fmt.Println(line)
 
 	return nil
 }

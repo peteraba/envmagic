@@ -39,18 +39,21 @@ eval "$(envmagic shell-init zsh)"
 envmagic shell-init fish | source
 ```
 
-Without the shell wrapper, `envmagic NAME` just prints an `export …`
-statement to stdout — you can still apply it manually with
-`eval "$(envmagic NAME)"`.
+Without the shell wrapper, `envmagic` and `envmagic load NAME` print `export …`
+statements; apply them with `eval "$(envmagic)"` or `eval "$(envmagic load NAME)"`.
+`envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
 
 ## Usage
 
 ```sh
 # Store a value (creates .envmagic in the current dir on first use)
-envmagic api_key 'sk-abc123'
+envmagic set api_key 'sk-abc123' # or: envmagic api_key 'sk-abc123'
+
+# Print a raw value
+envmagic get api_key # or: envmagic api_key
 
 # Load a single value into the current shell
-envmagic api_key
+envmagic load api_key
 
 # Load ALL values from the default namespace into the current shell
 envmagic
@@ -60,11 +63,12 @@ envmagic -n staging
 
 # Echo the export lines to stderr too (handy for debugging)
 envmagic --debug
-envmagic --debug api_key
+envmagic --debug load api_key
 
-# Use a namespace for individual get/set
-envmagic -n staging db_url 'postgres://…'
-envmagic -n staging db_url
+# Use a namespace for individual get/set/load
+envmagic -n staging set db_url 'postgres://…'
+envmagic -n staging get db_url
+envmagic -n staging load db_url
 
 # List names in a namespace
 envmagic list
@@ -85,13 +89,14 @@ envmagic import -i .env.example
 envmagic import --empty .env.example
 
 # Non-interactive / CI: create .envmagic without a prompt (set/import only)
-envmagic --yes api_key 'sk-abc123'
+envmagic --yes set api_key 'sk-abc123'
 envmagic import --yes .env
 # or: ENVMAGIC_NONINTERACTIVE=1 envmagic import .env
 ```
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
-`API_KEY`.
+`API_KEY`. If a name matches a subcommand (`get`, `set`, `load`, `list`, `key`, …),
+read it with `envmagic get NAME`.
 
 ### Importing from a template
 
@@ -141,7 +146,7 @@ writing, so a truncated backup is rejected before it overwrites anything.
 
 - **Store.** Each project gets a `.envmagic` SQLite file. `set` looks for one
   in the current directory and offers to create it (use `--yes` or
-  `ENVMAGIC_NONINTERACTIVE=1` to create without a prompt); `get`/`list`/`rm` walk up
+  `ENVMAGIC_NONINTERACTIVE=1` to create without a prompt); `get`/`load`/`list`/`rm` walk up
   the directory tree to find the nearest one (like `.git`).
 - **Encryption.** Values are sealed with AES-256-GCM. Names and namespaces
   are stored in plaintext (so `list` works without the key); only values are
@@ -159,6 +164,8 @@ writing, so a truncated backup is rejected before it overwrites anything.
   trust with the plaintext.
 - `set` creates `.envmagic` with mode `0600`; `list` reveals variable names
   but not values.
+- `get`/`NAME` print decrypted values; `load NAME` and the no-name form emit
+  exports that the shell wrapper evaluates. `--debug` echoes only these exports.
 - If the key is lost or rotated, existing entries can't be decrypted; you'll
   need to re-`set` them.
 
@@ -167,7 +174,10 @@ writing, so a truncated backup is rejected before it overwrites anything.
 | Command                                  | Description                                       |
 | ---------------------------------------- | ------------------------------------------------- |
 | `envmagic [-n NS]`                       | Export all values in a namespace to the shell     |
-| `envmagic [-n NS] NAME`                  | Decrypt and emit `export NAME=…`                  |
+| `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline      |
+| `envmagic [-n NS] NAME`                  | Alias of `get NAME`                              |
+| `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell |
+| `envmagic [-n NS] set NAME VALUE`        | Encrypt and store `VALUE` under `NAME`            |
 | `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`            |
 | `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                         |
 | `envmagic [-n NS] rm NAME`               | Remove a stored entry                             |
