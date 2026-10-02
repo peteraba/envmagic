@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -762,6 +764,36 @@ func TestSetCreatesStoreWithYes(t *testing.T) {
 			r = run("get", "foo_key")
 			if r.code() != 0 || r.stdout != "bar\n" {
 				t.Fatalf("get: exit=%d stdout=%q", r.code(), r.stdout)
+			}
+		})
+	}
+}
+
+func TestInvalidStoredNames(t *testing.T) {
+	for label, name := range map[string]string{"shell": "X=1; touch /tmp/x; #", "newline": "X\n", "escape": "X\x1b"} {
+		t.Run(label, func(t *testing.T) {
+			run := setup(t)
+			if result := run("set", "A_VALID", "safe"); result.code() != 0 {
+				t.Fatalf("set: %v", result.err)
+			}
+			db, err := sql.Open("sqlite", ".envmagic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) SELECT namespace, ?, value FROM env_vars WHERE name = 'A_VALID'`, name); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, command := range []string{"load", "list", "export"} {
+				result := run(command)
+				if result.code() == 0 || result.stdout != "" {
+					t.Errorf("%s: exit=%d stdout=%q err=%v", command, result.code(), result.stdout, result.err)
+				}
+				want := fmt.Sprintf("invalid variable name %q in store", name)
+				if result.err == nil || !strings.Contains(result.err.Error(), want) {
+					t.Errorf("%s: err=%v, want %q", command, result.err, want)
+				}
 			}
 		})
 	}

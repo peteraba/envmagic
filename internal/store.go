@@ -49,6 +49,16 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("failed to create table, path: %s, error: %w", path, err)
 	}
 
+	var objects int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type IN ('trigger','view')`).Scan(&objects); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to inspect schema, path: %s, error: %w", path, err)
+	}
+	if objects != 0 {
+		_ = db.Close()
+		return nil, fmt.Errorf("store %s contains triggers or views; refusing to open", path)
+	}
+
 	if created {
 		if err := os.Chmod(path, 0o600); err != nil {
 			fmt.Fprintf(os.Stderr, "envmagic: warning: could not chmod %s to 0600: %v\n", path, err)
@@ -105,6 +115,9 @@ func (s *Store) List(namespace string) ([]string, error) {
 		if err := rows.Scan(&n); err != nil {
 			return nil, err
 		}
+		if !ValidName(n) {
+			return nil, fmt.Errorf("invalid variable name %q in store", n)
+		}
 		names = append(names, n)
 	}
 
@@ -142,6 +155,9 @@ func (s *Store) GetAll(namespace string) ([]Entry, error) {
 		var e Entry
 		if err := rows.Scan(&e.Name, &e.Enc); err != nil {
 			return nil, err
+		}
+		if !ValidName(e.Name) {
+			return nil, fmt.Errorf("invalid variable name %q in store", e.Name)
 		}
 		entries = append(entries, e)
 	}

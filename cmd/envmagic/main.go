@@ -214,7 +214,7 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 
 	rawName := cmd.Args().First()
 	name := strings.ToUpper(rawName)
-	if !validVarName(name) {
+	if !internal.ValidName(name) {
 		return cli.Exit(fmt.Sprintf("envmagic: invalid env var name %q (must match [A-Z_][A-Z0-9_]*)", rawName), 2)
 	}
 
@@ -264,7 +264,7 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 	}
 	rawName := cmd.Args().First()
 	name := strings.ToUpper(rawName)
-	if !validVarName(name) {
+	if !internal.ValidName(name) {
 		return errorf("invalid env var name %q", rawName)
 	}
 
@@ -449,23 +449,6 @@ func findEnvmagic(start string) (string, bool) {
 		}
 		dir = parent
 	}
-}
-
-// validVarName returns true if s is a valid environment variable name (matches [A-Z_][A-Z0-9_]*).
-func validVarName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, c := range s {
-		if c == '_' || ('A' <= c && c <= 'Z') {
-			continue
-		}
-		if i > 0 && '0' <= c && c <= '9' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 // shellQuote returns a shell-escaped version of s, suitable for use in export statements.

@@ -189,7 +189,7 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 		}
 
 		name := strings.ToUpper(strings.TrimSpace(rawName))
-		if !validVarName(name) {
+		if !internal.ValidName(name) {
 			return nil, fmt.Errorf("line %d: invalid variable name %q", lineNum, rawName)
 		}
 
