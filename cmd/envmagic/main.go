@@ -290,6 +290,10 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 
 // runSet stores the given name=value pair in the active store under the given namespace.
 func runSet(cmd *cli.Command, namespace, name, value string) error {
+	if err := checkValue(name, value); err != nil {
+		return err
+	}
+
 	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
@@ -343,6 +347,9 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 
 	line := string(plain)
 	if cmd.Name == "load" {
+		if err := checkValue(name, line); err != nil {
+			return err
+		}
 		line = fmt.Sprintf("export %s=%s", name, shellQuote(line))
 		if cmd.Bool("debug") {
 			fmt.Fprintln(os.Stderr, line)
@@ -366,18 +373,29 @@ func runSourceAll(namespace string, debug bool) error {
 		return errorf("read: %v", err)
 	}
 
+	var output strings.Builder
 	for _, e := range entries {
 		plain, err := internal.Decrypt(h.key, e.Enc)
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
 		}
-		line := fmt.Sprintf("export %s=%s", e.Name, shellQuote(string(plain)))
-		fmt.Println(line)
-		if debug {
-			fmt.Fprintln(os.Stderr, line)
+		if err := checkValue(e.Name, string(plain)); err != nil {
+			return err
 		}
+		fmt.Fprintf(&output, "export %s=%s\n", e.Name, shellQuote(string(plain)))
+	}
+	fmt.Print(output.String())
+	if debug {
+		fmt.Fprint(os.Stderr, output.String())
 	}
 
+	return nil
+}
+
+func checkValue(name, value string) error {
+	if strings.ContainsRune(value, 0) {
+		return errorf("value for %s contains a NUL byte", name)
+	}
 	return nil
 }
 
