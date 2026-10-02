@@ -552,30 +552,35 @@ func TestShellWrapper(t *testing.T) {
 				}
 			}
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
+			status := "$?"
 			if shell == "fish" {
 				init = "envmagic shell-init fish | source\n"
+				status = "$status"
 			}
+			confirm := "envmagic: environment variables set\n"
 			for _, tc := range []struct {
 				command string
 				want    string
-				confirm bool
+				wantErr string
 			}{
-				{`envmagic -n staging list`, "NAME\nOTHER\n", false},
-				{`envmagic --namespace staging list`, "NAME\nOTHER\n", false},
-				{`envmagic --namespace=staging list`, "NAME\nOTHER\n", false},
-				{`envmagic get NAME`, value + "\n", false},
-				{`envmagic NAME`, value + "\n", false},
-				{`envmagic load NAME; printf %s "$NAME"`, value, false},
-				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", false},
-				{`envmagic; printf %s "$NAME"`, value, true},
-				{`envmagic -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", true},
-				{`envmagic --namespace staging; printf %s "$NAME"`, "staging value", true},
-				{`envmagic --namespace=staging; printf %s "$NAME"`, "staging value", true},
-				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", false},
-				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", false},
-				{`envmagic -n staging --help`, string(help), false},
-				{`envmagic -n staging -h`, string(help), false},
-				{`envmagic load --help`, string(loadHelp), false},
+				{`envmagic -n staging list`, "NAME\nOTHER\n", ""},
+				{`envmagic --namespace staging list`, "NAME\nOTHER\n", ""},
+				{`envmagic --namespace=staging list`, "NAME\nOTHER\n", ""},
+				{`envmagic get NAME`, value + "\n", ""},
+				{`envmagic NAME`, value + "\n", ""},
+				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{`envmagic -n empty`, "", ""},
+				{`envmagic load NAME; printf %s "$NAME"`, value, ""},
+				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", ""},
+				{`envmagic; printf %s "$NAME"`, value, confirm},
+				{`envmagic -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
+				{`envmagic --namespace staging; printf %s "$NAME"`, "staging value", confirm},
+				{`envmagic --namespace=staging; printf %s "$NAME"`, "staging value", confirm},
+				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", ""},
+				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", ""},
+				{`envmagic -n staging --help`, string(help), ""},
+				{`envmagic -n staging -h`, string(help), ""},
+				{`envmagic load --help`, string(loadHelp), ""},
 			} {
 				cmd := exec.Command(path, "-c", init+tc.command)
 				var stderr bytes.Buffer
@@ -584,8 +589,8 @@ func TestShellWrapper(t *testing.T) {
 				if err != nil || string(out) != tc.want {
 					t.Errorf("%s: err=%v stdout=%q want=%q stderr=%q", tc.command, err, out, tc.want, stderr.String())
 				}
-				if got := strings.Contains(stderr.String(), "envmagic: environment variables set"); got != tc.confirm {
-					t.Errorf("%s: load confirmation=%t, want %t; stderr=%q", tc.command, got, tc.confirm, stderr.String())
+				if got := stderr.String(); got != tc.wantErr {
+					t.Errorf("%s: stderr=%q, want %q", tc.command, got, tc.wantErr)
 				}
 			}
 		})

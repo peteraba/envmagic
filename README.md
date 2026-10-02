@@ -96,7 +96,8 @@ envmagic import --yes .env
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
 `API_KEY`. If a name matches a subcommand (`get`, `set`, `load`, `list`, `key`, …),
-read it with `envmagic get NAME`.
+read it with `envmagic get NAME` and store it with `envmagic set NAME VALUE`
+(e.g. `envmagic set list foo`).
 
 ### Importing from a template
 
@@ -171,25 +172,25 @@ writing, so a truncated backup is rejected before it overwrites anything.
 
 ## Commands
 
-| Command                                  | Description                                       |
-| ---------------------------------------- | ------------------------------------------------- |
-| `envmagic [-n NS]`                       | Export all values in a namespace to the shell     |
-| `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline      |
-| `envmagic [-n NS] NAME`                  | Alias of `get NAME`                              |
-| `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell |
-| `envmagic [-n NS] set NAME VALUE`        | Encrypt and store `VALUE` under `NAME`            |
-| `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`            |
-| `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                         |
-| `envmagic [-n NS] rm NAME`               | Remove a stored entry                             |
-| `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file (stdout if omitted) |
-| `envmagic [-n NS] import [FILE]`         | Import a `.env` file into a namespace (stdin if omitted) |
+| Command                                  | Description                                                      |
+| ---------------------------------------- | ---------------------------------------------------------------- |
+| `envmagic [-n NS]`                       | Export all values in a namespace to the shell                    |
+| `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline                      |
+| `envmagic [-n NS] NAME`                  | Alias of `get NAME`                                              |
+| `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell            |
+| `envmagic [-n NS] set NAME VALUE`        | Encrypt and store `VALUE` under `NAME`                           |
+| `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`                           |
+| `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                                        |
+| `envmagic [-n NS] rm NAME`               | Remove a stored entry                                            |
+| `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file (stdout if omitted)            |
+| `envmagic [-n NS] import [FILE]`         | Import a `.env` file into a namespace (stdin if omitted)         |
 | `envmagic [-n NS] import -i FILE`        | Fill values in an interactive form (template values as defaults) |
-| `envmagic [-n NS] import --empty [FILE]` | Store an empty value for every name in the file   |
-| `envmagic key`                           | Show the key file path and base64-encoded content |
-| `envmagic key --set <base64>`            | Restore the key from a base64 string              |
-| `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                   |
-| `envmagic help`                          | Show help                                         |
-| `envmagic --version`                     | Show version                                      |
+| `envmagic [-n NS] import --empty [FILE]` | Store an empty value for every name in the file                  |
+| `envmagic key`                           | Show the key file path and base64-encoded content                |
+| `envmagic key --set <base64>`            | Restore the key from a base64 string                             |
+| `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
+| `envmagic help`                          | Show help                                                        |
+| `envmagic --version`                     | Show version                                                     |
 
 ## Library usage
 
