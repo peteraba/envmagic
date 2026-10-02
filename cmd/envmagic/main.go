@@ -53,13 +53,13 @@ func newApp() *cli.Command {
 		Commands: []*cli.Command{
 			{
 				Name:      "get",
-				Usage:     "print a decrypted value",
+				Usage:     "print a decrypted value (unnecessary)",
 				ArgsUsage: "NAME",
 				Action:    cmdDefault,
 			},
 			{
 				Name:      "set",
-				Usage:     "store a value",
+				Usage:     "store a value (unnecessary)",
 				ArgsUsage: "NAME VALUE",
 				Action:    cmdDefault,
 			},
