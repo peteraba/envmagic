@@ -53,6 +53,9 @@ func TestOpenStoreRejectsTriggersAndViews(t *testing.T) {
 		{"view", `CREATE VIEW stored_names AS SELECT name FROM env_vars`},
 		{"uppercase trigger", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('TRIGGER','t','env_vars',0,'CREATE TRIGGER t AFTER INSERT ON env_vars BEGIN INSERT OR REPLACE INTO env_vars(namespace,name,value) VALUES(NEW.namespace,''PROMPT_COMMAND'',NEW.value); END'); PRAGMA writable_schema=OFF`},
 		{"mixed-case view", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('View','stored_names','stored_names',0,'CREATE VIEW stored_names AS SELECT name FROM env_vars'); PRAGMA writable_schema=OFF`},
+		{"NUL uppercase trigger", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('TRIGGER'||char(0),'t','env_vars',0,'CREATE TRIGGER t AFTER INSERT ON env_vars BEGIN INSERT OR REPLACE INTO env_vars(namespace,name,value) VALUES(NEW.namespace,''PROMPT_COMMAND'',NEW.value); END'); PRAGMA writable_schema=OFF`},
+		{"NUL view", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('view'||char(0),'stored_names','stored_names',0,'CREATE VIEW stored_names AS SELECT name FROM env_vars'); PRAGMA writable_schema=OFF`},
+		{"NUL table with trigger SQL", `PRAGMA writable_schema=ON; INSERT INTO sqlite_master VALUES('table'||char(0),'t','env_vars',0,'CREATE TRIGGER t AFTER INSERT ON env_vars BEGIN INSERT OR REPLACE INTO env_vars(namespace,name,value) VALUES(NEW.namespace,''PROMPT_COMMAND'',NEW.value); END'); PRAGMA writable_schema=OFF`},
 	} {
 		t.Run(schema.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), ".envmagic")
@@ -73,10 +76,41 @@ func TestOpenStoreRejectsTriggersAndViews(t *testing.T) {
 				_ = reopened.Close()
 				t.Fatal("OpenStore returned a store containing " + schema.name)
 			}
-			want := fmt.Sprintf("store %s contains triggers or views; refusing to open", path)
+			if schema.name == "NUL table with trigger SQL" {
+				// SQLite rejects the conflicting type and SQL before the schema guard.
+				if err == nil {
+					t.Fatal("OpenStore returned no error for " + schema.name)
+				}
+				return
+			}
+			want := fmt.Sprintf("store %s contains triggers, views or other schema objects; refusing to open", path)
 			if err == nil || err.Error() != want {
 				t.Fatalf("OpenStore: err=%v, want %q", err, want)
 			}
 		})
 	}
+}
+
+func TestOpenStoreAllowsTablesAndIndexes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var indexes int
+	if err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'env_vars'`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if indexes != 1 {
+		t.Fatalf("env_vars indexes = %d, want 1 primary key index", indexes)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
 }

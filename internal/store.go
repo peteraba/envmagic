@@ -50,13 +50,13 @@ func OpenStore(path string) (*Store, error) {
 	}
 
 	var objects int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE lower(type) IN ('trigger','view')`).Scan(&objects); err != nil {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type NOT IN ('table','index')`).Scan(&objects); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to inspect schema, path: %s, error: %w", path, err)
 	}
 	if objects != 0 {
 		_ = db.Close()
-		return nil, fmt.Errorf("store %s contains triggers or views; refusing to open", path)
+		return nil, fmt.Errorf("store %s contains triggers, views or other schema objects; refusing to open", path)
 	}
 
 	if created {
