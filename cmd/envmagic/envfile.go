@@ -36,6 +36,18 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		return errorf("read: %v", err)
 	}
 
+	var output strings.Builder
+	for _, e := range entries {
+		plain, err := internal.Decrypt(h.key, e.Enc)
+		if err != nil {
+			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
+		}
+		if err := checkValue(e.Name, string(plain)); err != nil {
+			return err
+		}
+		fmt.Fprintf(&output, "%s=%s\n", e.Name, dotenvQuote(string(plain)))
+	}
+
 	var w io.Writer = os.Stdout
 	if outPath != "" {
 		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -46,13 +58,7 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		w = f
 	}
 
-	for _, e := range entries {
-		plain, err := internal.Decrypt(h.key, e.Enc)
-		if err != nil {
-			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
-		}
-		_, _ = fmt.Fprintf(w, "%s=%s\n", e.Name, dotenvQuote(string(plain)))
-	}
+	_, _ = fmt.Fprint(w, output.String())
 
 	if outPath != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "envmagic: exported %d variable(s) from namespace %q to %s\n", len(entries), ns, outPath)
@@ -133,6 +139,12 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 // storeAll encrypts and stores all kvs in the active store under the given namespace,
 // creating the store if needed. Existing entries are overwritten.
 func storeAll(cmd *cli.Command, ns string, kvs [][2]string) error {
+	for _, kv := range kvs {
+		if err := checkValue(kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+
 	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return err
