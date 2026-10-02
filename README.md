@@ -39,9 +39,10 @@ eval "$(envmagic shell-init zsh)"
 envmagic shell-init fish | source
 ```
 
-Without the shell wrapper, `envmagic` and `envmagic load NAME` print `export …`
-statements; apply them with `eval "$(envmagic)"` or `eval "$(envmagic load NAME)"`.
+Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
+statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
 `envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
+Bare `envmagic` shows help.
 
 ## Usage
 
@@ -56,13 +57,13 @@ envmagic get api_key # or: envmagic api_key
 envmagic load api_key
 
 # Load ALL values from the default namespace into the current shell
-envmagic
+envmagic load
 
 # Load ALL values from a specific namespace
-envmagic -n staging
+envmagic -n staging load
 
 # Echo the export lines to stderr too (handy for debugging)
-envmagic --debug
+envmagic --debug load
 envmagic --debug load api_key
 
 # Use a namespace for individual get/set/load
@@ -165,7 +166,7 @@ writing, so a truncated backup is rejected before it overwrites anything.
   trust with the plaintext.
 - `set` creates `.envmagic` with mode `0600`; `list` reveals variable names
   but not values.
-- `get`/`NAME` print decrypted values; `load NAME` and the no-name form emit
+- `get`/`NAME` print decrypted values; `load NAME` and `load` emit
   exports that the shell wrapper evaluates. `--debug` echoes only these exports.
 - If the key is lost or rotated, existing entries can't be decrypted; you'll
   need to re-`set` them.
@@ -174,7 +175,8 @@ writing, so a truncated backup is rejected before it overwrites anything.
 
 | Command                                  | Description                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------- |
-| `envmagic [-n NS]`                       | Export all values in a namespace to the shell                    |
+| `envmagic [-n NS]`                       | Show help                                                        |
+| `envmagic [-n NS] load`                  | Export all values in a namespace to the shell                    |
 | `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline                      |
 | `envmagic [-n NS] NAME`                  | Alias of `get NAME`                                              |
 | `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell            |
