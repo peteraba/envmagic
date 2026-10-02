@@ -25,7 +25,7 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// shellInitPosix / shellInitFish eval only load or no positional arguments.
+// shellInitPosix / shellInitFish eval only load; confirm only load without a name.
 // Namespace values are skipped; help/version flags always bypass eval.
 
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
@@ -48,12 +48,12 @@ envmagic() {
             *)
                 if [ "$_envmagic_positional" -eq 0 ]; then
                     _envmagic_command=$_envmagic_arg
-                    _envmagic_positional=1
                 fi
+                _envmagic_positional=$((_envmagic_positional + 1))
                 ;;
         esac
     done
-    if [ "$_envmagic_positional" -ne 0 ] && [ "$_envmagic_command" != load ]; then
+    if [ "$_envmagic_command" != load ]; then
         command envmagic "$@"
         return $?
     fi
@@ -65,7 +65,7 @@ envmagic() {
     fi
     if [ -n "$_envmagic_out" ]; then
         eval "$_envmagic_out" || return $?
-        if [ "$_envmagic_positional" -eq 0 ]; then
+        if [ "$_envmagic_positional" -eq 1 ]; then
             echo 'envmagic: environment variables set' >&2
         fi
     fi
@@ -94,11 +94,11 @@ function envmagic
             case '*'
                 if test $_envmagic_positional -eq 0
                     set _envmagic_command "$_envmagic_arg"
-                    set _envmagic_positional 1
                 end
+                set _envmagic_positional (math $_envmagic_positional + 1)
         end
     end
-    if test $_envmagic_positional -ne 0; and test "$_envmagic_command" != load
+    if test "$_envmagic_command" != load
         command envmagic $argv
         return $status
     end
@@ -110,7 +110,7 @@ function envmagic
     if test -n "$_envmagic_out"
         eval "$_envmagic_out"
         or return $status
-        if test $_envmagic_positional -eq 0
+        if test $_envmagic_positional -eq 1
             echo 'envmagic: environment variables set' >&2
         end
     end

@@ -40,7 +40,7 @@ func newApp() *cli.Command {
 			&cli.BoolFlag{
 				Name:    "debug",
 				Aliases: []string{"d"},
-				Usage:   "echo export to stderr (load or no positional arguments)",
+				Usage:   "echo export to stderr (load only)",
 			},
 			&cli.BoolFlag{
 				Name:    "yes",
@@ -65,8 +65,8 @@ func newApp() *cli.Command {
 			},
 			{
 				Name:      "load",
-				Usage:     "print an export statement for a value",
-				ArgsUsage: "NAME",
+				Usage:     "print export statements for one or all values",
+				ArgsUsage: "[NAME]",
 				Action:    cmdDefault,
 			},
 			{
@@ -185,12 +185,16 @@ type handle struct {
 func (h *handle) close() error { return h.s.Close() }
 
 // cmdDefault handles get/set/load and the implicit `envmagic [-n NS] [-d] [NAME [VALUE]]` syntax.
-// With no positional arguments it sources (exports) the entire namespace.
+// With no positional arguments it shows help; load exports the entire namespace.
 func cmdDefault(_ context.Context, cmd *cli.Command) error {
 	switch cmd.Name {
-	case "get", "load":
+	case "get":
 		if cmd.NArg() != 1 {
 			return cli.Exit(fmt.Sprintf("usage: envmagic %s [-n NS] NAME", cmd.Name), 2)
+		}
+	case "load":
+		if cmd.NArg() > 1 {
+			return cli.Exit("usage: envmagic load [-n NS] [NAME]", 2)
 		}
 	case "set":
 		if cmd.NArg() != 2 {
@@ -202,7 +206,10 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 	debug := cmd.Bool("debug")
 
 	if cmd.NArg() == 0 {
-		return runSourceAll(ns, debug)
+		if cmd.Name == "load" {
+			return runSourceAll(ns, debug)
+		}
+		return cli.ShowRootCommandHelp(cmd)
 	}
 
 	rawName := cmd.Args().First()

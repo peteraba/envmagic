@@ -345,7 +345,7 @@ func TestImportTemplate(t *testing.T) {
 	if !strings.Contains(r.stderr, "imported 3 variable(s)") {
 		t.Errorf("import --empty: unexpected confirmation %q", r.stderr)
 	}
-	r = run()
+	r = run("load")
 	for _, name := range []string{"API_KEY", "DB_PORT", "DB_URL"} {
 		want := `export ` + name + `=""`
 		if !strings.Contains(r.stdout, want) {
@@ -533,6 +533,15 @@ func TestShellWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	hostileHome := t.TempDir()
+	hostileFile := filepath.Join(hostileHome, ".zshenv")
+	if err := os.WriteFile(hostileFile, []byte("envmagic() { echo hijacked; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", hostileFile)
+	t.Setenv("ENV", hostileFile)
+	t.Setenv("HOME", hostileHome)
+	t.Setenv("ZDOTDIR", hostileHome)
 
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
@@ -541,11 +550,13 @@ func TestShellWrapper(t *testing.T) {
 				t.Skip(shell + " is not on PATH")
 			}
 			run := setup(t)
+			home := t.TempDir()
 			value := `raw "quotes" $cash`
 			for _, args := range [][]string{
 				{"set", "name", value},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
+				{"-n", "ro", "set", "PWD", "readonly value"},
 			} {
 				if r := run(args...); r.code() != 0 {
 					t.Fatalf("seed %v: %v", args, r.err)
@@ -553,9 +564,16 @@ func TestShellWrapper(t *testing.T) {
 			}
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
+			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
+			evalError := "readonly variable"
+			if shell == "zsh" {
+				evalError = "read-only variable"
+			}
 			if shell == "fish" {
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
+				evalFailure = `envmagic -n ro load; echo "rc=$status"`
+				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
 			for _, tc := range []struct {
@@ -569,13 +587,21 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic get NAME`, value + "\n", ""},
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
-				{`envmagic -n empty`, "", ""},
+				{evalFailure, "rc=1\n", evalError},
+				{`envmagic load A B; echo "rc=` + status + `"`, "rc=2\n", "usage: envmagic load [-n NS] [NAME]\n"},
+				{`envmagic -n empty load`, "", ""},
+				{`envmagic`, string(help), ""},
+				{`envmagic -n staging`, string(help), ""},
+				{`envmagic >/dev/null; printf %s "$NAME"`, "", ""},
+				{`envmagic -n staging >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic load NAME; printf %s "$NAME"`, value, ""},
 				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", ""},
-				{`envmagic; printf %s "$NAME"`, value, confirm},
-				{`envmagic -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
-				{`envmagic --namespace staging; printf %s "$NAME"`, "staging value", confirm},
-				{`envmagic --namespace=staging; printf %s "$NAME"`, "staging value", confirm},
+				{`envmagic load NAME -n staging; printf %s "$NAME"`, "staging value", ""},
+				{`envmagic load; printf %s "$NAME"`, value, confirm},
+				{`envmagic -n staging load; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
+				{`envmagic load -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
+				{`envmagic --namespace staging load; printf %s "$NAME"`, "staging value", confirm},
+				{`envmagic --namespace=staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", ""},
 				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", ""},
 				{`envmagic -n staging --help`, string(help), ""},
@@ -583,13 +609,23 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic load --help`, string(loadHelp), ""},
 			} {
 				cmd := exec.Command(path, "-c", init+tc.command)
+				cmd.Env = []string{
+					"HOME=" + home,
+					"ZDOTDIR=" + home,
+					"PATH=" + os.Getenv("PATH"),
+					"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
+				}
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
 				out, err := cmd.Output()
 				if err != nil || string(out) != tc.want {
 					t.Errorf("%s: err=%v stdout=%q want=%q stderr=%q", tc.command, err, out, tc.want, stderr.String())
 				}
-				if got := stderr.String(); got != tc.wantErr {
+				if tc.command == evalFailure {
+					if got := stderr.String(); !strings.Contains(got, tc.wantErr) || strings.Contains(got, confirm) {
+						t.Errorf("%s: stderr=%q, want %q without confirmation", tc.command, got, tc.wantErr)
+					}
+				} else if got := stderr.String(); got != tc.wantErr {
 					t.Errorf("%s: stderr=%q, want %q", tc.command, got, tc.wantErr)
 				}
 			}
@@ -597,7 +633,7 @@ func TestShellWrapper(t *testing.T) {
 	}
 }
 
-// TestSourceAll verifies that calling envmagic with no positional arguments
+// TestSourceAll verifies that calling envmagic load with no name
 // exports all variables in the active namespace as shell-sourceable export lines.
 func TestSourceAll(t *testing.T) {
 	run := setup(t)
@@ -608,8 +644,8 @@ func TestSourceAll(t *testing.T) {
 	run("-n", "staging", "db_host", "staging-host")
 	run("-n", "staging", "api_key", "stg-secret")
 
-	// No args → export default namespace.
-	r := run()
+	// load → export default namespace.
+	r := run("load")
 	if r.code() != 0 {
 		t.Fatalf("source-all default: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
@@ -622,8 +658,8 @@ func TestSourceAll(t *testing.T) {
 		t.Error("source-all default: staging values leaked into default output")
 	}
 
-	// -n staging → export staging namespace only.
-	r = run("-n", "staging")
+	// -n staging load → export staging namespace only.
+	r = run("-n", "staging", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all staging: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
@@ -637,7 +673,7 @@ func TestSourceAll(t *testing.T) {
 	}
 
 	// --debug echoes the export lines to stderr as well.
-	r = run("--debug")
+	r = run("--debug", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all --debug: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
@@ -646,12 +682,22 @@ func TestSourceAll(t *testing.T) {
 	}
 
 	// Empty namespace produces no output and exits 0.
-	r = run("-n", "empty-ns")
+	r = run("-n", "empty-ns", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all empty namespace: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
 	if strings.TrimSpace(r.stdout) != "" {
 		t.Errorf("source-all empty namespace: expected no stdout, got %q", r.stdout)
+	}
+}
+
+func TestDefaultHelp(t *testing.T) {
+	run := setupBare(t)
+	for _, args := range [][]string{nil, {"-n", "staging"}, {"--debug"}} {
+		r := run(args...)
+		if r.code() != 0 || !strings.Contains(r.stdout, "USAGE:") || r.stderr != "" {
+			t.Errorf("%v: exit=%d stdout=%q stderr=%q", args, r.code(), r.stdout, r.stderr)
+		}
 	}
 }
 
@@ -738,8 +784,7 @@ func TestInputValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"get"},
 		{"get", "name", "extra"},
-		{"load"},
-		{"load", "name", "extra"},
+		{"load", "A", "B"},
 		{"set"},
 		{"set", "name"},
 		{"set", "name", "value", "extra"},
