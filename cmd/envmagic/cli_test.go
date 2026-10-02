@@ -230,6 +230,87 @@ func TestImportRejectsNUL(t *testing.T) {
 	}
 }
 
+func TestNULRejectedBeforeCreation(t *testing.T) {
+	for _, command := range []string{"set", "import", "import without yes"} {
+		t.Run(command, func(t *testing.T) {
+			run := setupBare(t)
+			args := []string{"--yes", "set", "NAME", "a\x00b"}
+			if command != "set" {
+				path := filepath.Join(t.TempDir(), "input.env")
+				if err := os.WriteFile(path, []byte("NAME=a\x00b\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"--yes", "import", path}
+				if command == "import without yes" {
+					args = []string{"import", path}
+					t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+					input, err := os.Open(os.DevNull)
+					if err != nil {
+						t.Fatal(err)
+					}
+					origIn := os.Stdin
+					os.Stdin = input
+					t.Cleanup(func() {
+						os.Stdin = origIn
+						_ = input.Close()
+					})
+				}
+			}
+			r := run(args...)
+			if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for NAME contains a NUL byte" {
+				t.Errorf("%s: exit=%d stdout=%q err=%v", command, r.code(), r.stdout, r.err)
+			}
+			for _, path := range []string{".envmagic", filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "envmagic", "key")} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("rejected %s created %s: stat err=%v", command, path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestImportEmptyDiscardsNUL(t *testing.T) {
+	run := setup(t)
+	path := filepath.Join(t.TempDir(), "template.env")
+	if err := os.WriteFile(path, []byte("BAD=\"a\x00b\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("import", "--empty", path); r.code() != 0 {
+		t.Fatalf("import --empty: %v", r.err)
+	}
+	if r := run("get", "BAD"); r.code() != 0 || r.stdout != "\n" {
+		t.Errorf("get BAD: stdout=%q err=%v", r.stdout, r.err)
+	}
+}
+
+func TestExportRejectsCorruptCiphertext(t *testing.T) {
+	run := setup(t)
+	for _, name := range []string{"A_GOOD", "Z_BAD"} {
+		if r := run("set", name, "valid"); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+	}
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("UPDATE env_vars SET value = ? WHERE namespace = ? AND name = ?", []byte{0x93, 0x27, 0xea}, "default", "Z_BAD"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "output.env")
+	previous := []byte("unchanged\x00\xff\n")
+	if err := os.WriteFile(path, previous, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("export", path); r.code() == 0 || r.stdout != "" {
+		t.Errorf("export: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	if content, err := os.ReadFile(path); err != nil || !bytes.Equal(content, previous) {
+		t.Errorf("rejected export changed file: content=%q err=%v", content, err)
+	}
+}
+
 func TestEmitRejectsStoredNUL(t *testing.T) {
 	run := setup(t)
 	if r := run("set", "A_GOOD", "valid"); r.code() != 0 {
@@ -776,8 +857,9 @@ func TestSourceAll(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("source-all --debug: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	if !strings.Contains(r.stderr, "export DB_HOST=") {
-		t.Errorf("source-all --debug: expected export in stderr, got %q", r.stderr)
+	want := "export DB_HOST=\"localhost\"\nexport PORT=\"5432\"\n"
+	if r.stdout != want || r.stderr != r.stdout {
+		t.Errorf("source-all --debug: stdout=%q stderr=%q, want %q on both", r.stdout, r.stderr, want)
 	}
 
 	// Empty namespace produces no output and exits 0.
