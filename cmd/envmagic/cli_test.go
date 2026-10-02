@@ -533,6 +533,15 @@ func TestShellWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	hostileHome := t.TempDir()
+	hostileFile := filepath.Join(hostileHome, ".zshenv")
+	if err := os.WriteFile(hostileFile, []byte("envmagic() { echo hijacked; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", hostileFile)
+	t.Setenv("ENV", hostileFile)
+	t.Setenv("HOME", hostileHome)
+	t.Setenv("ZDOTDIR", hostileHome)
 
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
@@ -547,6 +556,7 @@ func TestShellWrapper(t *testing.T) {
 				{"set", "name", value},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
+				{"-n", "ro", "set", "PWD", "readonly value"},
 			} {
 				if r := run(args...); r.code() != 0 {
 					t.Fatalf("seed %v: %v", args, r.err)
@@ -554,9 +564,16 @@ func TestShellWrapper(t *testing.T) {
 			}
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
+			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
+			evalError := "readonly variable"
+			if shell == "zsh" {
+				evalError = "read-only variable"
+			}
 			if shell == "fish" {
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
+				evalFailure = `envmagic -n ro load; echo "rc=$status"`
+				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
 			for _, tc := range []struct {
@@ -570,6 +587,8 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic get NAME`, value + "\n", ""},
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{evalFailure, "rc=1\n", evalError},
+				{`envmagic load A B; echo "rc=` + status + `"`, "rc=2\n", "usage: envmagic load [-n NS] [NAME]\n"},
 				{`envmagic -n empty load`, "", ""},
 				{`envmagic`, string(help), ""},
 				{`envmagic -n staging`, string(help), ""},
@@ -577,8 +596,10 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic -n staging >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic load NAME; printf %s "$NAME"`, value, ""},
 				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", ""},
+				{`envmagic load NAME -n staging; printf %s "$NAME"`, "staging value", ""},
 				{`envmagic load; printf %s "$NAME"`, value, confirm},
 				{`envmagic -n staging load; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
+				{`envmagic load -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
 				{`envmagic --namespace staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic --namespace=staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", ""},
@@ -600,7 +621,11 @@ func TestShellWrapper(t *testing.T) {
 				if err != nil || string(out) != tc.want {
 					t.Errorf("%s: err=%v stdout=%q want=%q stderr=%q", tc.command, err, out, tc.want, stderr.String())
 				}
-				if got := stderr.String(); got != tc.wantErr {
+				if tc.command == evalFailure {
+					if got := stderr.String(); !strings.Contains(got, tc.wantErr) || strings.Contains(got, confirm) {
+						t.Errorf("%s: stderr=%q, want %q without confirmation", tc.command, got, tc.wantErr)
+					}
+				} else if got := stderr.String(); got != tc.wantErr {
 					t.Errorf("%s: stderr=%q, want %q", tc.command, got, tc.wantErr)
 				}
 			}
