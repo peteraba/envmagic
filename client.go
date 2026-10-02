@@ -91,9 +91,9 @@ func (c *Client) Get(namespace, name string) (string, error) {
 		return "", fmt.Errorf("failed to get entry, namespace: %s, name: %s, error: %w", namespace, name, err)
 	}
 
-	plain, err := internal.Decrypt(c.key, enc)
+	plain, err := internal.Decrypt(c.key, enc, internal.AD(namespace, name))
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt entry: %w", err)
+		return "", fmt.Errorf("failed to decrypt entry: %w (wrong key or stored by an older envmagic; re-import it (see README))", err)
 	}
 
 	return string(plain), nil
@@ -109,9 +109,9 @@ func (c *Client) Load(namespace string) ([]string, error) {
 
 	var loaded []string
 	for _, e := range entries {
-		plain, err := internal.Decrypt(c.key, e.Enc)
+		plain, err := internal.Decrypt(c.key, e.Enc, internal.AD(namespace, e.Name))
 		if err != nil {
-			return nil, fmt.Errorf("decrypt %s: %w", e.Name, err)
+			return nil, fmt.Errorf("decrypt %s: %w (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
 
 		if err := os.Setenv(e.Name, string(plain)); err != nil {

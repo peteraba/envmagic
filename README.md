@@ -152,12 +152,25 @@ writing, so a truncated backup is rejected before it overwrites anything.
   the directory tree to find the nearest one (like `.git`).
 - **Encryption.** Values are sealed with AES-256-GCM. Names and namespaces
   are stored in plaintext (so `list` works without the key); only values are
-  encrypted.
+  encrypted. Each value is bound to its namespace and name, so moving
+  ciphertext between rows fails to decrypt.
 - **Key.** A 32-byte key is generated on first use at
   `$XDG_CONFIG_HOME/envmagic/key` (mode `0600`). Run `envmagic key` to see
   the path and value; use `envmagic key --set <base64>` to restore it.
 - **Namespaces.** Use `-n NS` to keep `dev`/`staging`/`prod` separate within
   the same `.envmagic` file. The default namespace is `default`.
+
+### Upgrading from older builds
+
+Before installing the new build, copy the old binary to `envmagic-old`.
+Older values must be re-imported: from each store's directory, run the
+following for every namespace (replace `NS`, including `default`):
+
+```sh
+envmagic-old -n NS export | envmagic -n NS import
+```
+
+After all stores and namespaces are re-imported successfully, delete `envmagic-old`.
 
 ## Security notes
 

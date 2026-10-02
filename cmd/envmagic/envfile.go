@@ -38,9 +38,9 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 
 	var output strings.Builder
 	for _, e := range entries {
-		plain, err := internal.Decrypt(h.key, e.Enc)
+		plain, err := internal.Decrypt(h.key, e.Enc, internal.AD(ns, e.Name))
 		if err != nil {
-			return errorf("decrypt %s: %v (wrong key?)", e.Name, err)
+			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
 		if err := checkValue(e.Name, string(plain)); err != nil {
 			return err
@@ -162,7 +162,7 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string) error {
 	defer func() { _ = s.Close() }()
 
 	for _, kv := range kvs {
-		enc, err := internal.Encrypt(key, []byte(kv[1]))
+		enc, err := internal.Encrypt(key, []byte(kv[1]), internal.AD(ns, kv[0]))
 		if err != nil {
 			return errorf("encrypt %s: %v", kv[0], err)
 		}
