@@ -1,6 +1,9 @@
 package envmagic_test
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -161,6 +164,57 @@ func TestClient_CiphertextBinding(t *testing.T) {
 				t.Errorf("Load after swap changed target environment variable to %q", got)
 			}
 		})
+	}
+}
+
+func TestClient_LegacyCiphertext(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const name = "ENVMAGIC_LEGACY"
+	t.Setenv(name, "unchanged")
+	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	client, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	enc := gcm.Seal(nonce, nonce, []byte("legacy secret"), nil)
+	db, err := sql.Open("sqlite", storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES (?, ?, ?)`, envmagic.DefaultNamespace, name, enc); err != nil {
+		t.Fatal(err)
+	}
+
+	const hint = "or stored by an older envmagic; re-import it (see README)"
+	if got, err := client.Get(envmagic.DefaultNamespace, name); err == nil || got != "" || !strings.Contains(err.Error(), hint) {
+		t.Errorf("Get legacy: got=%q err=%v, want no value and hint %q", got, err, hint)
+	}
+	if got := os.Getenv(name); got != "unchanged" {
+		t.Errorf("Get legacy changed environment variable to %q", got)
+	}
+	if loaded, err := client.Load(envmagic.DefaultNamespace); err == nil || loaded != nil || !strings.Contains(err.Error(), hint) {
+		t.Errorf("Load legacy: loaded=%v err=%v, want no names and hint %q", loaded, err, hint)
+	}
+	if got := os.Getenv(name); got != "unchanged" {
+		t.Errorf("Load legacy changed environment variable to %q", got)
 	}
 }
 

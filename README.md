@@ -164,11 +164,20 @@ writing, so a truncated backup is rejected before it overwrites anything.
 
 Before installing the new build, copy the old binary to `envmagic-old`.
 Older values must be re-imported: from each store's directory, run the
-following for every namespace (replace `NS`, including `default`):
+following for every namespace (replace `NS`, including `default`). List them with
+`sqlite3 .envmagic 'SELECT DISTINCT namespace FROM env_vars'`.
+
+Re-import before writing anything with the new build to that namespace: the old
+export fails on a new-format row, but without `pipefail` the pipe still exits 0.
+Use bash/zsh with `set -o pipefail` and check stderr:
 
 ```sh
+set -o pipefail
 envmagic-old -n NS export | envmagic -n NS import
 ```
+
+The old export replaces bytes that are not valid UTF-8 with U+FFFD, and import
+refuses lines over 64 KiB. Set such values again by hand with the new build.
 
 After all stores and namespaces are re-imported successfully, delete `envmagic-old`.
 

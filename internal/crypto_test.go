@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,7 @@ func TestADUnambiguous(t *testing.T) {
 		{"a", "BC", "aB", "C"},
 		{"", "ABC", "A", "BC"},
 		{"a\x00", "B", "a", "\x00B"},
+		{strings.Repeat("a", 256), "B", "", strings.Repeat("a", 256) + "B"},
 	} {
 		if bytes.Equal(AD(pair[0], pair[1]), AD(pair[2], pair[3])) {
 			t.Errorf("AD(%q, %q) equals AD(%q, %q)", pair[0], pair[1], pair[2], pair[3])

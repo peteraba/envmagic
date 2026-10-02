@@ -612,6 +612,37 @@ func TestImportAndExport(t *testing.T) {
 	}
 }
 
+func TestImportNamespaceBinding(t *testing.T) {
+	run := setup(t)
+	const value = "staging secret with spaces"
+	path := filepath.Join(t.TempDir(), "input.env")
+	if err := os.WriteFile(path, []byte("TOKEN="+value+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("-n", "staging", "import", path); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r := run("-n", "staging", "get", "TOKEN"); r.code() != 0 || r.stdout != value+"\n" {
+		t.Errorf("get imported value: stdout=%q err=%v", r.stdout, r.err)
+	}
+
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	res, err := db.Exec(`UPDATE env_vars SET namespace = 'default' WHERE namespace = 'staging' AND name = 'TOKEN'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("move: affected=%d err=%v", n, err)
+	}
+	if r := run("-n", "default", "get", "TOKEN"); r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "message authentication failed") {
+		t.Errorf("get moved ciphertext: stdout=%q err=%v", r.stdout, r.err)
+	}
+}
+
 // TestImportTemplate covers the --empty and --interactive import modes used to
 // populate the store from an example .env file.
 func TestImportTemplate(t *testing.T) {
