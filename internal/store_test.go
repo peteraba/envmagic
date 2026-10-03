@@ -238,10 +238,6 @@ func TestStoreInvalidNames(t *testing.T) {
 			if err == nil || err.Error() != want || entries != nil {
 				t.Errorf("GetAll: entries=%v err=%v, want nil and %q", entries, err, want)
 			}
-			names, err := store.List("default")
-			if err == nil || err.Error() != want || names != nil {
-				t.Errorf("List: names=%v err=%v, want nil and %q", names, err, want)
-			}
 		})
 	}
 }

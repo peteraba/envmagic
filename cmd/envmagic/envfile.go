@@ -14,31 +14,27 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-// cmdExport exports all entries in the namespace to a .env file.
 func cmdExport(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() > 1 {
 		return cli.Exit("usage: envmagic export [-n NS] [FILE]", 2)
 	}
 	ns := cmd.String("namespace")
-	var outPath string
-	if cmd.NArg() == 1 {
-		outPath = cmd.Args().First()
-	}
+	outPath := cmd.Args().First()
 
-	h, err := openActiveHandle()
+	s, key, err := openActiveStore()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = h.close() }()
+	defer func() { _ = s.Close() }()
 
-	entries, err := h.s.GetAll(ns)
+	entries, err := s.GetAll(ns)
 	if err != nil {
 		return errorf("read: %v", err)
 	}
 
 	var output strings.Builder
 	for _, e := range entries {
-		plain, err := internal.Decrypt(h.key, e.Enc, internal.AD(ns, e.Name))
+		plain, err := internal.Decrypt(key, e.Enc, internal.AD(ns, e.Name))
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
@@ -81,10 +77,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 	}
 
 	ns := cmd.String("namespace")
-	var inPath string
-	if cmd.NArg() == 1 {
-		inPath = cmd.Args().First()
-	}
+	inPath := cmd.Args().First()
 	if interactive && inPath == "" {
 		return cli.Exit("envmagic import: --interactive requires a FILE argument", 2)
 	}
@@ -122,7 +115,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if err := storeAll(cmd, ns, kvs); err != nil {
+	if _, err := storeAll(cmd, ns, kvs); err != nil {
 		return err
 	}
 
@@ -138,40 +131,45 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 
 // storeAll encrypts and stores all kvs in the active store under the given namespace,
 // creating the store if needed. Existing entries are overwritten.
-func storeAll(cmd *cli.Command, ns string, kvs [][2]string) error {
+func storeAll(cmd *cli.Command, ns string, kvs [][2]string) (string, error) {
 	for _, kv := range kvs {
 		if err := checkValue(kv[0], kv[1]); err != nil {
-			return err
+			return "", err
 		}
 	}
 
 	dbPath, err := findOrCreateStorePath(cmd)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	key, err := loadKey()
 	if err != nil {
-		return errorf("load key: %v", err)
+		return "", errorf("load key: %v", err)
 	}
 
 	s, err := internal.OpenStore(dbPath)
 	if err != nil {
-		return errorf("open store: %v", err)
+		return "", errorf("open store: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 
 	for _, kv := range kvs {
+		// Import errors identify the variable; set keeps its shorter error prefix.
+		label := ""
+		if cmd.Name == "import" {
+			label = " " + kv[0]
+		}
 		enc, err := internal.Encrypt(key, []byte(kv[1]), internal.AD(ns, kv[0]))
 		if err != nil {
-			return errorf("encrypt %s: %v", kv[0], err)
+			return "", errorf("encrypt%s: %v", label, err)
 		}
 		if err := s.Set(ns, kv[0], enc); err != nil {
-			return errorf("write %s: %v", kv[0], err)
+			return "", errorf("write%s: %v", label, err)
 		}
 	}
 
-	return nil
+	return dbPath, nil
 }
 
 // parseDotenv reads NAME=value lines from r.
