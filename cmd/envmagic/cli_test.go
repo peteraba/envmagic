@@ -169,6 +169,36 @@ func TestSetAndGet(t *testing.T) {
 	}
 }
 
+func TestSetPreservesWhitespace(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"padded", "  padded  "},
+		{"leading newline", "\nleading newline"},
+		{"trailing newline", "trailing newline\n"},
+		{"tabs and spaces", "\t tab and space \t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, form := range []string{"explicit", "implicit"} {
+				t.Run(form, func(t *testing.T) {
+					run := setup(t)
+					args := []string{"TOKEN", tc.value}
+					if form == "explicit" {
+						args = append([]string{"set"}, args...)
+					}
+					if r := run(args...); r.code() != 0 {
+						t.Fatalf("set: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
+					}
+					if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != tc.value+"\n" || r.stderr != "" {
+						t.Errorf("get: exit=%d stdout=%q stderr=%q err=%v; want stdout=%q", r.code(), r.stdout, r.stderr, r.err, tc.value+"\n")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestStoreWriteErrors(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can write a read-only store")
