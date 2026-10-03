@@ -15,16 +15,18 @@ func Example() {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	previous, exists := os.LookupEnv("XDG_CONFIG_HOME")
-	defer func() {
-		if exists {
-			_ = os.Setenv("XDG_CONFIG_HOME", previous)
-		} else {
-			_ = os.Unsetenv("XDG_CONFIG_HOME")
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData"} {
+		previous, exists := os.LookupEnv(name)
+		defer func() {
+			if exists {
+				_ = os.Setenv(name, previous)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		}()
+		if err := os.Setenv(name, dir); err != nil {
+			panic(err)
 		}
-	}()
-	if err := os.Setenv("XDG_CONFIG_HOME", dir); err != nil {
-		panic(err)
 	}
 
 	c, err := envmagic.OpenWithPath(filepath.Join(dir, ".envmagic"))

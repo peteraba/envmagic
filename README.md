@@ -108,7 +108,7 @@ envmagic key --set '4Tz8…(base64)…=='
 `key --set` validates that the decoded value is exactly 32 bytes before
 writing, so a truncated backup is rejected before it overwrites anything.
 
-### Upgrading from older builds
+## Upgrading from older builds
 
 Before installing the new build, copy the old binary to `envmagic-old`.
 Older values must be re-imported: from each store's directory, run the
@@ -155,6 +155,10 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 | `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
 | `envmagic help`                          | Show help                                                        |
 | `envmagic --version`                     | Show version                                                     |
+
+`import -i` is short for `import --interactive`. In the form, Enter keeps the
+template's value. Input is masked for names containing `KEY`, `SECRET`, `TOKEN`
+or `PASS`.
 
 ## Library usage
 

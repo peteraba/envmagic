@@ -105,6 +105,7 @@ func (c *Client) Get(namespace, name string) (string, error) {
 
 // Load decrypts all variables in namespace and sets them as environment
 // variables in the current process via os.Setenv.
+// It returns the names it loaded.
 func (c *Client) Load(namespace string) ([]string, error) {
 	entries, err := c.s.GetAll(namespace)
 	if err != nil {
