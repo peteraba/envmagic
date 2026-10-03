@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
 
 	"github.com/peteraba/envmagic"
@@ -63,8 +65,8 @@ func newApp() *cli.Command {
 			},
 			{
 				Name:      "set",
-				Usage:     "store a value (usually optional)",
-				ArgsUsage: "NAME VALUE",
+				Usage:     "store a value (usually optional); without VALUE, read piped stdin",
+				ArgsUsage: "NAME [VALUE]",
 				Action:    cmdDefault,
 			},
 			{
@@ -187,8 +189,8 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 			return cli.Exit("usage: envmagic load [-n NS] [NAME]", 2)
 		}
 	case "set":
-		if cmd.NArg() != 2 {
-			return cli.Exit("usage: envmagic set [-n NS] NAME VALUE", 2)
+		if err := checkSetArgs(cmd.NArg(), isatty.IsTerminal(os.Stdin.Fd())); err != nil {
+			return err
 		}
 	}
 
@@ -210,12 +212,22 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 
 	switch cmd.NArg() {
 	case 1:
+		if cmd.Name == "set" {
+			return runSetFromStdin(cmd, ns, name)
+		}
 		return runGet(cmd, ns, name)
 	case 2:
 		return runSet(cmd, ns, name, cmd.Args().Get(1))
 	default:
 		return cli.Exit("envmagic: too many positional arguments; expected NAME [VALUE]", 2)
 	}
+}
+
+func checkSetArgs(argCount int, stdinTerminal bool) error {
+	if argCount < 1 || argCount > 2 || (argCount == 1 && stdinTerminal) {
+		return cli.Exit("usage: envmagic set [-n NS] NAME [VALUE]; without VALUE, pipe the value on stdin (e.g. printf '%s' \"$SECRET\" | envmagic set NAME)", 2)
+	}
+	return nil
 }
 
 func cmdList(_ context.Context, cmd *cli.Command) error {
@@ -274,6 +286,21 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 	fmt.Fprintf(os.Stderr, "envmagic: removed %s from namespace %q\n", name, ns)
 
 	return nil
+}
+
+func runSetFromStdin(cmd *cli.Command, namespace, name string) error {
+	if _, err := findOrCreateStorePath(cmd); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return errorf("read stdin: %v", err)
+	}
+	value := string(data)
+	if strings.HasSuffix(value, "\n") {
+		value = strings.TrimSuffix(strings.TrimSuffix(value, "\n"), "\r")
+	}
+	return runSet(cmd, namespace, name, value)
 }
 
 func runSet(cmd *cli.Command, namespace, name, value string) error {
@@ -399,6 +426,9 @@ func findOrCreateStorePath(cmd *cli.Command) (string, error) {
 	target := filepath.Join(cwd, ".envmagic")
 	if cmd.Root().Bool("yes") {
 		return target, nil
+	}
+	if cmd.Name == "set" && cmd.NArg() == 1 {
+		return "", errorf("no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store")
 	}
 
 	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
