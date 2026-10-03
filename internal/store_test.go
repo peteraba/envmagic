@@ -27,6 +27,74 @@ func TestOpenStorePermissions(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE untouched (value TEXT)"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalOwner, originalUID := fileOwner, currentUID
+	t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+	currentUID = func() int { return 1000 }
+	fileOwner = func(os.FileInfo) (int, bool) { return 1001, true }
+	store, err := OpenStore(path)
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenStore returned a foreign-owned store")
+	}
+	want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid 1000); refusing to open", path)
+	if err == nil || err.Error() != want {
+		t.Fatalf("OpenStore: err=%v, want %q", err, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("foreign-owned store changed")
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+			t.Errorf("SQLite sidecar %s: stat error=%v, want file not to exist", suffix, err)
+		}
+	}
+}
+
+func TestOpenStoreRejectsForeignOwnerAfterCreate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	originalOwner, originalUID := fileOwner, currentUID
+	t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+	currentUID = func() int { return 1000 }
+	checks := 0
+	fileOwner = func(os.FileInfo) (int, bool) {
+		checks++
+		return 1001, true
+	}
+	store, err := OpenStore(path)
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenStore returned a foreign-owned store after creation")
+	}
+	want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid 1000); refusing to open", path)
+	if err == nil || err.Error() != want {
+		t.Fatalf("OpenStore: err=%v, want %q", err, want)
+	}
+	if checks != 1 {
+		t.Fatalf("owner checks=%d, want 1", checks)
+	}
+}
+
 func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "a?_pragma=writable_schema(1)&b=")

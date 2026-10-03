@@ -27,6 +27,7 @@ type Client struct {
 }
 
 // OpenWithKeyAndPath opens a store at storePath using the key from the specified key path.
+// On Unix, it refuses a store file owned by another user.
 func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error) {
 	s, err := internal.OpenStore(storePath)
 	if err != nil {
@@ -45,6 +46,7 @@ func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error) {
 // OpenWithPath opens (or creates) the SQLite store at storePath using the key from the default
 // key path (~/.config/envmagic/key), generating a new key if none exists.
 // If the store file does not exist, it is created on open.
+// On Unix, it refuses a store file owned by another user.
 func OpenWithPath(storePath string) (*Client, error) {
 	s, err := internal.OpenStore(storePath)
 	if err != nil {
@@ -62,6 +64,7 @@ func OpenWithPath(storePath string) (*Client, error) {
 
 // Open opens (or creates) the store at .envmagic in the current working directory,
 // using the key from the default key path (~/.config/envmagic/key), generating a new key if none exists.
+// On Unix, it refuses a store file owned by another user.
 func Open() (*Client, error) {
 	dir, err := os.Getwd()
 	if err != nil {
