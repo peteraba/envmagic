@@ -185,3 +185,230 @@ func TestOwnerUID(t *testing.T) {
 		t.Errorf("ownerUID=(%d, %t), want (%d, true)", uid, known, os.Getuid())
 	}
 }
+
+func TestOwnerUIDRootDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("requires a non-root process")
+	}
+	info, err := os.Stat("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uid, known := ownerUID(info); !known || uid != 0 {
+		t.Fatalf("ownerUID(/)=(%d, %t), want (0, true)", uid, known)
+	}
+}
+
+func TestRealRootOwnedSymlinkUsesParentStore(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("requires a non-root process")
+	}
+	var target string
+	for _, path := range []string{"/etc/hostname", "/etc/hosts", "/etc/passwd"} {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if uid, known := ownerUID(info); known && uid == 0 {
+			target = path
+			break
+		}
+	}
+	if target == "" {
+		t.Skip("no root-owned file available")
+	}
+	run := setup(t)
+	if r := run("set", "TOKEN", "parent"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if err := os.Mkdir("child", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	if err := os.Symlink(target, ".envmagic"); err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.Abs(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warning := fmt.Sprintf("envmagic: skipping %s: owned by uid 0, not by you (uid %d)\n", path, os.Getuid())
+	if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "parent\n" || r.stderr != warning {
+		t.Fatalf("get through root-owned symlink: %+v", r)
+	}
+}
+
+func TestPipedSetWarnsOnce(t *testing.T) {
+	for _, parentStore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent=%t", parentStore), func(t *testing.T) {
+			run := setupBare(t)
+			if parentStore {
+				if r := run("--yes", "set", "TOKEN", "parent"); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join("foreign", "child"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path, err := filepath.Abs(filepath.Join("foreign", ".envmagic"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := internal.OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			warning := mockForeignOwner(t, path)
+			t.Chdir(filepath.Join("foreign", "child"))
+			setTestStdin(t, "stdin-value\n")
+			args := []string{"set", "TOKEN"}
+			if !parentStore {
+				args = append([]string{"--yes"}, args...)
+			}
+			r := run(args...)
+			if r.code() != 0 || strings.Count(r.stderr, warning) != 1 || strings.Count(r.stderr, "skipping") != 1 {
+				t.Fatalf("piped set: %+v", r)
+			}
+			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "stdin-value\n" {
+				t.Fatalf("get after piped set: %+v", r)
+			}
+		})
+	}
+}
+
+func TestPipedSetRefusesForeignStoreInCWD(t *testing.T) {
+	for _, yes := range []bool{false, true} {
+		t.Run(fmt.Sprintf("yes=%t", yes), func(t *testing.T) {
+			run := setup(t)
+			path, err := filepath.Abs(".envmagic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			warning := mockForeignOwner(t, path)
+			setTestStdin(t, "updated\n")
+			args := []string{"set", "TOKEN"}
+			if yes {
+				args = append([]string{"--yes"}, args...)
+			}
+			r := run(args...)
+			if r.code() != 1 || r.stderr != warning || r.err == nil || !strings.Contains(r.err.Error(), "refusing to overwrite skipped store "+path) {
+				t.Fatalf("piped set: %+v", r)
+			}
+		})
+	}
+}
+
+func TestStoreSwapWhileOpening(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "TOKEN"},
+		{"set", "TOKEN", "updated"},
+		{"set", "TOKEN"},
+		{"import"},
+		{"rm", "TOKEN"},
+		{"load"},
+		{"list"},
+		{"export"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setup(t)
+			if r := run("set", "TOKEN", "original"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			owned, err := filepath.Abs(".envmagic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownedInfo, err := os.Stat(owned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			target := filepath.Join(dir, "swapped.db")
+			s, err := internal.OpenStore(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Set("default", "TOKEN", []byte("unchanged")); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, ".envmagic")
+			if err := os.Symlink(owned, link); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+			setTestStdin(t, "TOKEN=updated\n")
+			originalOwner := fileOwner
+			t.Cleanup(func() { fileOwner = originalOwner })
+			checks := 0
+			swapAt := 1
+			if len(args) == 2 && args[0] == "set" {
+				swapAt = 2 // Piped set has a silent preflight search.
+			}
+			fileOwner = func(info os.FileInfo) (int, bool) {
+				if os.SameFile(ownedInfo, info) {
+					checks++
+					if checks == swapAt {
+						if err := os.Remove(link); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(target, link); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return originalOwner(info)
+			}
+			// Both targets have the same owner; only the inode check detects this swap.
+			r := run(args...)
+			if r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "store "+link+" changed while opening; refusing to use it") {
+				t.Errorf("swap: %+v", r)
+			}
+			s, err = internal.OpenStore(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close() }()
+			value, err := s.Get("default", "TOKEN")
+			if err != nil || string(value) != "unchanged" {
+				t.Fatalf("swapped target changed: value=%q err=%v", value, err)
+			}
+		})
+	}
+}
+
+func TestCreateRefusesUnacceptedEntry(t *testing.T) {
+	for _, kind := range []string{"dangling", "loop", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			run := setupBare(t)
+			target := filepath.Join(t.TempDir(), "missing.db")
+			var err error
+			switch kind {
+			case "dangling":
+				err = os.Symlink(target, ".envmagic")
+			case "loop":
+				err = os.Symlink(".envmagic", ".envmagic")
+			case "directory":
+				err = os.Mkdir(".envmagic", 0o700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"--yes", "set", "TOKEN", "updated"}, {"--yes", "set", "TOKEN"}, {"--yes", "import"}} {
+				setTestStdin(t, "TOKEN=updated\n")
+				r := run(args...)
+				if r.code() != 1 || r.err == nil || !strings.Contains(r.err.Error(), "refusing to overwrite skipped store") {
+					t.Errorf("%v: %+v", args, r)
+				}
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("dangling target created: %v", err)
+				}
+			}
+		})
+	}
+}
