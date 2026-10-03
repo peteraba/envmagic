@@ -1,6 +1,7 @@
 package envmagic_test
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,10 +18,26 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
+func isolateKeyPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData"} {
+		t.Setenv(name, dir)
+	}
+	path, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(dir, path); err != nil || !filepath.IsLocal(rel) {
+		t.Fatalf("key path %q is outside test directory %q: %v", path, dir, err)
+	}
+	return path
+}
+
 func TestOpenWithPath_RelativePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 	c, err := envmagic.OpenWithPath(".envmagic")
 	if err != nil {
 		t.Fatal(err)
@@ -34,8 +52,7 @@ func TestOpenWithPath_RelativePath(t *testing.T) {
 }
 
 func TestOpenWithPath_KeyCreated(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
+	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
 
 	c1, err := envmagic.OpenWithPath(storePath)
@@ -58,7 +75,7 @@ func TestOpenWithPath_KeyCreated(t *testing.T) {
 }
 
 func TestClient_Get_ErrNotFound(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
 
 	c, err := envmagic.OpenWithPath(storePath)
@@ -75,11 +92,23 @@ func TestClient_Get_ErrNotFound(t *testing.T) {
 
 func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 	store := filepath.Join(dir, ".envmagic")
 
-	c0, err := envmagic.OpenWithPath(store)
+	c0, err := internal.OpenStore(store)
 	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c0.Close() })
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := internal.Encrypt(key, []byte("cwd value"), internal.AD(envmagic.DefaultNamespace, "KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c0.Set(envmagic.DefaultNamespace, "KEY", enc); err != nil {
 		t.Fatal(err)
 	}
 	_ = c0.Close()
@@ -92,8 +121,84 @@ func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	if _, err := c.Get(envmagic.DefaultNamespace, "ANY"); !errors.Is(err, envmagic.ErrNotFound) {
-		t.Fatalf("Open cwd store: Get missing: %v", err)
+	if got, err := c.Get(envmagic.DefaultNamespace, "KEY"); err != nil || got != "cwd value" {
+		t.Fatalf("Open cwd store: got=%q err=%v", got, err)
+	}
+}
+
+func TestOpenWithKeyAndPath(t *testing.T) {
+	isolateKeyPath(t)
+	dir := t.TempDir()
+	keyPath, storePath := filepath.Join(dir, "custom-key"), filepath.Join(dir, "custom-store")
+	key := bytes.Repeat([]byte{1}, 32)
+	if err := internal.WriteKey(keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+	store, err := internal.OpenStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	enc, err := internal.Encrypt(key, []byte("custom value"), internal.AD("dev", "KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("dev", "KEY", enc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := envmagic.OpenWithKeyAndPath(keyPath, storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if got, err := c.Get("dev", "KEY"); err != nil || got != "custom value" {
+		t.Fatalf("Get: got=%q err=%v", got, err)
+	}
+}
+
+func TestClient_Load(t *testing.T) {
+	isolateKeyPath(t)
+	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	client, err := envmagic.OpenWithPath(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := internal.OpenStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	values := map[string]string{
+		"A_ENVMAGIC_LOAD_TEST": "first value",
+		"Z_ENVMAGIC_LOAD_TEST": "second value",
+	}
+	for name, value := range values {
+		t.Setenv(name, "unchanged")
+		enc, err := internal.Encrypt(key, []byte(value), internal.AD("dev", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Set("dev", name, enc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := client.Load("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(loaded)
+	if want := []string{"A_ENVMAGIC_LOAD_TEST", "Z_ENVMAGIC_LOAD_TEST"}; !slices.Equal(loaded, want) {
+		t.Errorf("Load names=%v, want %v", loaded, want)
+	}
+	for name, want := range values {
+		if got := os.Getenv(name); got != want {
+			t.Errorf("Load %s=%q, want %q", name, got, want)
+		}
 	}
 }
 
@@ -107,7 +212,7 @@ func TestClient_CiphertextBinding(t *testing.T) {
 		{"namespace", "prd", "ENVMAGIC_TOKEN"},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			isolateKeyPath(t)
 			t.Setenv("ENVMAGIC_TOKEN", "unchanged")
 			t.Setenv(tc.name, "unchanged")
 			storePath := filepath.Join(t.TempDir(), ".envmagic")
@@ -168,7 +273,7 @@ func TestClient_CiphertextBinding(t *testing.T) {
 }
 
 func TestClient_LegacyCiphertext(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 	const name = "ENVMAGIC_LEGACY"
 	t.Setenv(name, "unchanged")
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
@@ -219,7 +324,7 @@ func TestClient_LegacyCiphertext(t *testing.T) {
 }
 
 func TestClient_Load_InvalidStoredName(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
 	client, err := envmagic.OpenWithPath(storePath)
 	if err != nil {

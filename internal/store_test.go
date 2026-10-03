@@ -6,8 +6,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+func TestOpenStorePermissions(t *testing.T) {
+	permissiveUmask(t)
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
+		t.Fatalf("mode=%#o, want 0600", got)
+	}
+}
 
 func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
 	base := t.TempDir()
