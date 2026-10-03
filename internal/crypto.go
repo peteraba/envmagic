@@ -46,6 +46,7 @@ func Encrypt(key, plaintext, ad []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plaintext, ad), nil
 }
 
+// Decrypt opens AES-256-GCM data in nonce || ciphertext || tag format.
 func Decrypt(key, data, ad []byte) ([]byte, error) {
 	gcm, err := newGCM(key, "decrypt")
 	if err != nil {

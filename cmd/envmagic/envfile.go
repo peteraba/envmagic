@@ -115,7 +115,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if _, err := storeAll(cmd, ns, kvs); err != nil {
+	if _, err := storeAll(cmd, ns, kvs, true); err != nil {
 		return err
 	}
 
@@ -131,7 +131,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 
 // storeAll encrypts and stores all kvs in the active store under the given namespace,
 // creating the store if needed. Existing entries are overwritten.
-func storeAll(cmd *cli.Command, ns string, kvs [][2]string) (string, error) {
+func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (string, error) {
 	for _, kv := range kvs {
 		if err := checkValue(kv[0], kv[1]); err != nil {
 			return "", err
@@ -155,9 +155,8 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string) (string, error) {
 	defer func() { _ = s.Close() }()
 
 	for _, kv := range kvs {
-		// Import errors identify the variable; set keeps its shorter error prefix.
 		label := ""
-		if cmd.Name == "import" {
+		if includeName {
 			label = " " + kv[0]
 		}
 		enc, err := internal.Encrypt(key, []byte(kv[1]), internal.AD(ns, kv[0]))

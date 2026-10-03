@@ -268,7 +268,7 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 }
 
 func runSet(cmd *cli.Command, namespace, name, value string) error {
-	dbPath, err := storeAll(cmd, namespace, [][2]string{{name, value}})
+	dbPath, err := storeAll(cmd, namespace, [][2]string{{name, value}}, false)
 	if err != nil {
 		return err
 	}

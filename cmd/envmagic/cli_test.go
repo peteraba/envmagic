@@ -89,13 +89,21 @@ func setupBare(t *testing.T) func(args ...string) result {
 // TestSetAndGet covers explicit and implicit syntax, raw values, and load exports.
 func TestSetAndGet(t *testing.T) {
 	run := setup(t)
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
+	dbPath, err := filepath.Abs(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStderr := fmt.Sprintf("envmagic: stored API_KEY (namespace %q) in %s\n", "default", dbPath)
 
 	r := run("api_key", "sk-test-abc")
 	if r.code() != 0 {
 		t.Fatalf("set: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	if !strings.Contains(r.stderr, "stored API_KEY") {
-		t.Errorf("set: expected confirmation in stderr, got %q", r.stderr)
+	if r.stderr != wantStderr {
+		t.Errorf("set: stderr=%q, want %q", r.stderr, wantStderr)
 	}
 
 	r = run("api_key")
@@ -109,7 +117,7 @@ func TestSetAndGet(t *testing.T) {
 
 	value := `spaces "quotes" $cash`
 	r = run("set", "api_key", value)
-	if r.code() != 0 || r.stdout != "" || !strings.Contains(r.stderr, "stored API_KEY") {
+	if r.code() != 0 || r.stdout != "" || r.stderr != wantStderr {
 		t.Fatalf("set: exit %d stdout=%q stderr=%q", r.code(), r.stdout, r.stderr)
 	}
 	for _, args := range [][]string{
@@ -158,6 +166,41 @@ func TestSetAndGet(t *testing.T) {
 		if r = run("get", name); r.code() != 0 || r.stdout != "reserved\n" {
 			t.Errorf("get %s: stdout=%q err=%v", name, r.stdout, r.err)
 		}
+	}
+}
+
+func TestStoreWriteErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only store")
+	}
+	run := setup(t)
+	if r := run("set", "API_KEY", "original"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	envFile := filepath.Join(t.TempDir(), "input.env")
+	if err := os.WriteFile(envFile, []byte("API_KEY=updated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(".envmagic", 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args   []string
+		prefix string
+	}{
+		{[]string{"set", "API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
+		{[]string{"API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
+		{[]string{"import", envFile}, "envmagic: write API_KEY: failed to set entry,"},
+	} {
+		t.Run(tc.args[0], func(t *testing.T) {
+			r := run(tc.args...)
+			if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || !strings.HasPrefix(r.err.Error(), tc.prefix) || !strings.Contains(r.err.Error(), "readonly") {
+				t.Errorf("%v: exit=%d stdout=%q stderr=%q err=%v; want %q and readonly error", tc.args, r.code(), r.stdout, r.stderr, r.err, tc.prefix)
+			}
+		})
+	}
+	if r := run("get", "API_KEY"); r.code() != 0 || r.stdout != "original\n" {
+		t.Errorf("rejected writes changed value: stdout=%q err=%v", r.stdout, r.err)
 	}
 }
 
@@ -506,6 +549,9 @@ func TestListAndRemove(t *testing.T) {
 // values, and exporting them back to both stdout and a file.
 func TestImportAndExport(t *testing.T) {
 	run := setup(t)
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
 
 	envContent := strings.Join([]string{
 		"# this is a comment",
@@ -524,8 +570,9 @@ func TestImportAndExport(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("import: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	if !strings.Contains(r.stderr, "imported 3 variable(s)") {
-		t.Errorf("import: unexpected confirmation %q", r.stderr)
+	wantStderr := fmt.Sprintf("envmagic: imported 3 variable(s) from %s into namespace %q\n", envFile, "default")
+	if r.stderr != wantStderr {
+		t.Errorf("import: stderr=%q, want %q", r.stderr, wantStderr)
 	}
 
 	for varName, wantVal := range map[string]string{

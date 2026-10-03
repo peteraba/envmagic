@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 )
 
+// KeyPath returns the default encryption key file path.
 func KeyPath() (string, error) {
 	cfg, err := os.UserConfigDir()
 	if err != nil {
@@ -17,6 +18,7 @@ func KeyPath() (string, error) {
 	return filepath.Join(cfg, "envmagic", "key"), nil
 }
 
+// LoadKey reads a key file, requiring exactly 32 bytes.
 func LoadKey(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -34,6 +36,7 @@ func LoadKey(path string) ([]byte, error) {
 	return nil, fmt.Errorf("failed to read key file %s: %w", path, err)
 }
 
+// WriteKey writes the key with owner-only permissions, creating its directory if needed.
 func WriteKey(path string, key []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("failed to create key file directory %s: %w", filepath.Dir(path), err)
