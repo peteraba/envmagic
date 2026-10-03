@@ -199,6 +199,72 @@ func TestSetPreservesWhitespace(t *testing.T) {
 	}
 }
 
+func TestSetFlagParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		value     string
+		namespace string
+	}{
+		{"explicit terminator", []string{"set", "--", "TOKEN", "--help"}, "--help", "default"},
+		{"implicit terminator", []string{"--", "TOKEN", "--help"}, "--help", "default"},
+		{"lone dash", []string{"set", "TOKEN", "-", "-n", "other"}, "-", "other"},
+		{"non-ASCII dash value", []string{"set", "TOKEN", "-€"}, "-€", "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := setup(t)
+			if r := run(tc.args...); r.code() != 0 || r.stdout != "" {
+				t.Fatalf("set: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
+			}
+			if r := run("-n", tc.namespace, "get", "TOKEN"); r.code() != 0 || r.stdout != tc.value+"\n" || r.stderr != "" {
+				t.Errorf("get: exit=%d stdout=%q stderr=%q err=%v; want stdout=%q", r.code(), r.stdout, r.stderr, r.err, tc.value+"\n")
+			}
+			if tc.namespace != "default" {
+				if r := run("get", "TOKEN"); r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "not found") {
+					t.Errorf("default namespace: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+				}
+			}
+		})
+	}
+}
+
+func TestUsageErrorsNoStdout(t *testing.T) {
+	argsList := [][]string{
+		{"--bogus"},
+		{"get", "X", "-q"},
+		{"load", "-x"},
+		{"set", "X", "-abc"},
+		{"set", "X", "-n"},
+		{"key", "--set"},
+		{"import", "-ie"},
+	}
+	for _, cmd := range newApp().Commands {
+		argsList = append(argsList, []string{cmd.Name, "--bogus"})
+	}
+	for _, args := range argsList {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setupBare(t)
+			r := run(args...)
+			if r.code() != 1 || r.stdout != "" || !strings.HasPrefix(r.stderr, "Incorrect Usage: ") || strings.Count(r.stderr, "\n") != 1 {
+				t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want exit 1, empty stdout and a one-line usage diagnostic", r.code(), r.stdout, r.stderr, r.err)
+			}
+		})
+	}
+}
+
+func TestNamespacePreservesWhitespace(t *testing.T) {
+	run := setup(t)
+	if r := run("--namespace=x ", "set", "TOKEN", "v"); r.code() != 0 || r.stdout != "" {
+		t.Fatalf("set: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
+	}
+	if r := run("--namespace=x ", "get", "TOKEN"); r.code() != 0 || r.stdout != "v\n" || r.stderr != "" {
+		t.Errorf("get padded namespace: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
+	}
+	if r := run("-n", "x", "get", "TOKEN"); r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "not found") {
+		t.Errorf("get unpadded namespace: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+}
+
 func TestStoreWriteErrors(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can write a read-only store")
@@ -1039,7 +1105,7 @@ func TestSourceAll(t *testing.T) {
 
 func TestDefaultHelp(t *testing.T) {
 	run := setupBare(t)
-	for _, args := range [][]string{nil, {"-n", "staging"}, {"--debug"}} {
+	for _, args := range [][]string{nil, {"-n", "staging"}, {"--debug"}, {"--help"}, {"-h"}, {"help"}, {"help", "set"}, {"set", "--help"}, {"set", "-h"}} {
 		r := run(args...)
 		if r.code() != 0 || !strings.Contains(r.stdout, "USAGE:") || r.stderr != "" {
 			t.Errorf("%v: exit=%d stdout=%q stderr=%q", args, r.code(), r.stdout, r.stderr)
@@ -1200,11 +1266,11 @@ func TestImportInvalidName(t *testing.T) {
 func TestInputValidation(t *testing.T) {
 	run := setup(t)
 
-	for _, badName := range []string{"123start", "has-hyphen", "has space", "has.dot"} {
+	for _, badName := range []string{"123start", "has-hyphen", "has space", "has.dot", " TOKEN "} {
 		for _, args := range [][]string{{badName, "value"}, {"get", badName}, {"load", badName}, {"set", badName, "value"}} {
 			r := run(args...)
-			if r.code() != 2 {
-				t.Errorf("invalid name %v: expected exit 2, got %d", args, r.code())
+			if r.code() != 2 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "invalid env var name") {
+				t.Errorf("invalid name %v: exit=%d stdout=%q err=%v; want invalid env var name with exit 2", args, r.code(), r.stdout, r.err)
 			}
 		}
 	}
@@ -1215,6 +1281,7 @@ func TestInputValidation(t *testing.T) {
 		{"set"},
 		{"set", "name"},
 		{"set", "name", "value", "extra"},
+		{"set", "TOKEN", "-", "extra"},
 	} {
 		r := run(args...)
 		if r.code() != 2 || !strings.HasPrefix(r.err.Error(), "usage: envmagic "+args[0]) {
