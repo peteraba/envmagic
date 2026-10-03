@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1422,7 +1423,7 @@ func TestKeySetPermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != want {
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 			t.Errorf("%s: mode=%#o, want %#o", path, got, want)
 		}
 	}
@@ -1464,6 +1465,9 @@ func TestKeyWriteErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 				blocked := filepath.Dir(path)
+				if err := os.MkdirAll(filepath.Dir(blocked), 0o700); err != nil {
+					t.Fatal(err)
+				}
 				want := "failed to create key file directory"
 				if operation == "write" {
 					if err := os.Mkdir(blocked, 0o700); err != nil {

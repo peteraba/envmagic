@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -78,7 +79,7 @@ func TestWriteKeyPermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != want {
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 			t.Errorf("%s: mode=%#o, want %#o", path, got, want)
 		}
 	}
