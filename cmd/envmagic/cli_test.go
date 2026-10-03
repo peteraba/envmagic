@@ -237,6 +237,7 @@ func TestUsageErrorsNoStdout(t *testing.T) {
 		{"set", "X", "-n"},
 		{"key", "--set"},
 		{"import", "-ie"},
+		{"help", "--bogus"},
 	}
 	for _, cmd := range newApp().Commands {
 		argsList = append(argsList, []string{cmd.Name, "--bogus"})
@@ -245,6 +246,13 @@ func TestUsageErrorsNoStdout(t *testing.T) {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			run := setupBare(t)
 			r := run(args...)
+			// Runtime-added help bypasses the usage hook and adds a trailing blank line.
+			if args[0] == "help" {
+				if r.code() == 0 || r.stdout != "" || !strings.Contains(r.stderr, "flag provided but not defined") {
+					t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want non-zero exit, empty stdout and an unknown-flag diagnostic", r.code(), r.stdout, r.stderr, r.err)
+				}
+				return
+			}
 			if r.code() != 1 || r.stdout != "" || !strings.HasPrefix(r.stderr, "Incorrect Usage: ") || strings.Count(r.stderr, "\n") != 1 {
 				t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want exit 1, empty stdout and a one-line usage diagnostic", r.code(), r.stdout, r.stderr, r.err)
 			}
@@ -1003,6 +1011,7 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic get NAME`, value + "\n", ""},
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{`envmagic load -x; echo "rc=` + status + `"`, "rc=1\n", "Incorrect Usage: flag provided but not defined: -x\n"},
 				{evalFailure, "rc=1\n", evalError},
 				{`envmagic load A B; echo "rc=` + status + `"`, "rc=2\n", "usage: envmagic load [-n NS] [NAME]\n"},
 				{`envmagic -n empty load`, "", ""},
