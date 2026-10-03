@@ -12,6 +12,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/peteraba/envmagic"
 	"github.com/peteraba/envmagic/internal"
 )
 
@@ -20,11 +21,10 @@ var version = "v0.5.0"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
-		os.Exit(exitCode(err))
+		os.Exit(1)
 	}
 }
 
-// newApp constructs the CLI application with its commands and flags.
 func newApp() *cli.Command {
 	return &cli.Command{
 		Name:    "envmagic",
@@ -34,7 +34,7 @@ func newApp() *cli.Command {
 			&cli.StringFlag{
 				Name:    "namespace",
 				Aliases: []string{"n"},
-				Value:   "default",
+				Value:   envmagic.DefaultNamespace,
 				Usage:   "a namespace",
 			},
 			&cli.BoolFlag{
@@ -126,7 +126,6 @@ func newApp() *cli.Command {
 	}
 }
 
-// cmdKey shows the encryption key path and content, or restores it when --set is given.
 func cmdKey(_ context.Context, cmd *cli.Command) error {
 	if b64 := cmd.String("set"); b64 != "" {
 		data, err := base64.StdEncoding.DecodeString(b64)
@@ -141,11 +140,8 @@ func cmdKey(_ context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return errorf("key path: %v", err)
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return errorf("create key dir: %v", err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			return errorf("write key: %v", err)
+		if err := internal.WriteKey(path, data); err != nil {
+			return errorf("%v", err)
 		}
 
 		fmt.Fprintf(os.Stderr, "envmagic: key restored to %s\n", path)
@@ -168,21 +164,6 @@ func cmdKey(_ context.Context, cmd *cli.Command) error {
 
 	return nil
 }
-
-func exitCode(err error) int {
-	if ec, ok := err.(cli.ExitCoder); ok {
-		return ec.ExitCode()
-	}
-	return 1
-}
-
-// handle bundles an open store and its encryption key for a single CLI operation.
-type handle struct {
-	s   *internal.Store
-	key []byte
-}
-
-func (h *handle) close() error { return h.s.Close() }
 
 // cmdDefault handles get/set/load and the implicit `envmagic [-n NS] [-d] [NAME [VALUE]]` syntax.
 // With no positional arguments it shows help; load exports the entire namespace.
@@ -228,36 +209,34 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 	}
 }
 
-// cmdList handles `envmagic list [-n NS]`, listing all variable names in the namespace.
 func cmdList(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() > 0 {
 		return cli.Exit(fmt.Sprintf("envmagic list: unexpected arguments: %v", cmd.Args().Slice()), 2)
 	}
 
-	h, err := openActiveHandle()
+	s, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = h.close() }()
+	defer func() { _ = s.Close() }()
 
 	ns := cmd.String("namespace")
-	names, err := h.s.List(ns)
+	entries, err := s.GetAll(ns)
 	if err != nil {
 		return errorf("list: %v", err)
 	}
-	if len(names) == 0 {
+	if len(entries) == 0 {
 		fmt.Fprintf(os.Stderr, "envmagic: no entries in namespace %q\n", ns)
 		return nil
 	}
 
-	for _, n := range names {
-		fmt.Println(n)
+	for _, e := range entries {
+		fmt.Println(e.Name)
 	}
 
 	return nil
 }
 
-// cmdRemove handles `envmagic rm [-n NS] NAME`, removing the given name from the namespace.
 func cmdRemove(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() != 1 {
 		return cli.Exit("usage: envmagic rm [-n NS] NAME", 2)
@@ -268,14 +247,14 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 		return errorf("invalid env var name %q", rawName)
 	}
 
-	h, err := openActiveHandle()
+	s, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = h.close() }()
+	defer func() { _ = s.Close() }()
 
 	ns := cmd.String("namespace")
-	n, err := h.s.Delete(ns, name)
+	n, err := s.Delete(ns, name)
 	if err != nil {
 		return errorf("delete: %v", err)
 	}
@@ -288,35 +267,10 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// runSet stores the given name=value pair in the active store under the given namespace.
 func runSet(cmd *cli.Command, namespace, name, value string) error {
-	if err := checkValue(name, value); err != nil {
-		return err
-	}
-
-	dbPath, err := findOrCreateStorePath(cmd)
+	dbPath, err := storeAll(cmd, namespace, [][2]string{{name, value}}, false)
 	if err != nil {
 		return err
-	}
-
-	key, err := loadKey()
-	if err != nil {
-		return errorf("load key: %v", err)
-	}
-
-	enc, err := internal.Encrypt(key, []byte(value), internal.AD(namespace, name))
-	if err != nil {
-		return errorf("encrypt: %v", err)
-	}
-
-	s, err := internal.OpenStore(dbPath)
-	if err != nil {
-		return errorf("open store: %v", err)
-	}
-	defer func() { _ = s.Close() }()
-
-	if err := s.Set(namespace, name, enc); err != nil {
-		return errorf("write: %v", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "envmagic: stored %s (namespace %q) in %s\n", name, namespace, dbPath)
@@ -324,15 +278,14 @@ func runSet(cmd *cli.Command, namespace, name, value string) error {
 	return nil
 }
 
-// runGet prints the decrypted value, or an export statement for load.
 func runGet(cmd *cli.Command, namespace, name string) error {
-	h, err := openActiveHandle()
+	s, key, err := openActiveStore()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = h.close() }()
+	defer func() { _ = s.Close() }()
 
-	enc, err := h.s.Get(namespace, name)
+	enc, err := s.Get(namespace, name)
 	if err != nil {
 		if errors.Is(err, internal.ErrEntryNotFound) {
 			return errorf("%s not found in namespace %q", name, namespace)
@@ -340,7 +293,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 		return errorf("read: %v", err)
 	}
 
-	plain, err := internal.Decrypt(h.key, enc, internal.AD(namespace, name))
+	plain, err := internal.Decrypt(key, enc, internal.AD(namespace, name))
 	if err != nil {
 		return errorf("decrypt: %v (wrong key or stored by an older envmagic; re-import it (see README))", err)
 	}
@@ -360,22 +313,21 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 	return nil
 }
 
-// runSourceAll retrieves all entries in the namespace and prints export statements for each.
 func runSourceAll(namespace string, debug bool) error {
-	h, err := openActiveHandle()
+	s, key, err := openActiveStore()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = h.close() }()
+	defer func() { _ = s.Close() }()
 
-	entries, err := h.s.GetAll(namespace)
+	entries, err := s.GetAll(namespace)
 	if err != nil {
 		return errorf("read: %v", err)
 	}
 
 	var output strings.Builder
 	for _, e := range entries {
-		plain, err := internal.Decrypt(h.key, e.Enc, internal.AD(namespace, e.Name))
+		plain, err := internal.Decrypt(key, e.Enc, internal.AD(namespace, e.Name))
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
@@ -399,29 +351,27 @@ func checkValue(name, value string) error {
 	return nil
 }
 
-// openActiveHandle opens the store from the nearest .envmagic file,
-// returning an error if none is found.
-func openActiveHandle() (*handle, error) {
+func openActiveStore() (*internal.Store, []byte, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, errorf("getcwd: %v", err)
+		return nil, nil, errorf("getcwd: %v", err)
 	}
 	dbPath, found := findEnvmagic(cwd)
 	if !found {
-		return nil, errorf("no .envmagic file found in %s or any parent", cwd)
+		return nil, nil, errorf("no .envmagic file found in %s or any parent", cwd)
 	}
 
 	key, err := loadKey()
 	if err != nil {
-		return nil, errorf("load key: %v", err)
+		return nil, nil, errorf("load key: %v", err)
 	}
 
 	s, err := internal.OpenStore(dbPath)
 	if err != nil {
-		return nil, errorf("open store: %v", err)
+		return nil, nil, errorf("open store: %v", err)
 	}
 
-	return &handle{s: s, key: key}, nil
+	return s, key, nil
 }
 
 // findOrCreateStorePath returns the path to the nearest .envmagic file,
@@ -453,7 +403,6 @@ func findOrCreateStorePath(cmd *cli.Command) (string, error) {
 	return target, nil
 }
 
-// findEnvmagic looks for a .envmagic file in the given directory and its parents, returning the path if found.
 func findEnvmagic(start string) (string, bool) {
 	dir := start
 	for {
@@ -485,7 +434,6 @@ func shellQuote(s string) string {
 	return b.String()
 }
 
-// promptYesNo displays the prompt and reads a line of input, returning true if the input is "y" or "yes" (case-insensitive).
 func promptYesNo(prompt string) (bool, error) {
 	for range 3 {
 		fmt.Fprint(os.Stderr, prompt)
@@ -533,7 +481,6 @@ func notifyNewEncryptionKey(key []byte, path string) {
 	fmt.Fprintln(os.Stderr, "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.")
 }
 
-// errorf formats an error message and wraps it in a cli.Exit with code 1.
 func errorf(format string, a ...any) error {
 	return cli.Exit(fmt.Sprintf("envmagic: "+format, a...), 1)
 }

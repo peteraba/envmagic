@@ -20,7 +20,6 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-// result holds the captured output from a single CLI invocation.
 type result struct {
 	stdout string
 	stderr string
@@ -43,16 +42,25 @@ func (r result) code() int {
 func setup(t *testing.T) func(args ...string) result {
 	t.Helper()
 
-	dir := t.TempDir()
-	t.Chdir(dir)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	run := setupBare(t)
 
 	// Pre-create the store so no invocation hits the interactive "create?" prompt.
-	s, err := internal.OpenStore(filepath.Join(dir, ".envmagic"))
+	s, err := internal.OpenStore(".envmagic")
 	if err != nil {
 		t.Fatalf("setup: create store: %v", err)
 	}
 	_ = s.Close()
+
+	return run
+}
+
+// setupBare is like setup but does not create .envmagic (for testing create flows).
+func setupBare(t *testing.T) func(args ...string) result {
+	t.Helper()
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	return func(args ...string) result {
 		rOut, wOut, _ := os.Pipe()
@@ -78,51 +86,26 @@ func setup(t *testing.T) func(args ...string) result {
 	}
 }
 
-// setupBare is like setup but does not create .envmagic (for testing create flows).
-func setupBare(t *testing.T) func(args ...string) result {
-	t.Helper()
-
-	dir := t.TempDir()
-	t.Chdir(dir)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	return func(args ...string) result {
-		rOut, wOut, _ := os.Pipe()
-		rErr, wErr, _ := os.Pipe()
-		origOut, origErr := os.Stdout, os.Stderr
-		os.Stdout, os.Stderr = wOut, wErr
-
-		app := newApp()
-		app.ExitErrHandler = func(_ context.Context, _ *cli.Command, _ error) {}
-
-		appErr := app.Run(context.Background(), append([]string{"envmagic"}, args...))
-
-		_ = wOut.Close()
-		_ = wErr.Close()
-		os.Stdout, os.Stderr = origOut, origErr
-
-		var bufOut, bufErr bytes.Buffer
-		_, _ = io.Copy(&bufOut, rOut)
-		_, _ = io.Copy(&bufErr, rErr)
-
-		return result{bufOut.String(), bufErr.String(), appErr}
-	}
-}
-
 // TestSetAndGet covers explicit and implicit syntax, raw values, and load exports.
 func TestSetAndGet(t *testing.T) {
 	run := setup(t)
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
+	dbPath, err := filepath.Abs(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStderr := fmt.Sprintf("envmagic: stored API_KEY (namespace %q) in %s\n", "default", dbPath)
 
-	// Set stores the value and prints a confirmation to stderr.
 	r := run("api_key", "sk-test-abc")
 	if r.code() != 0 {
 		t.Fatalf("set: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	if !strings.Contains(r.stderr, "stored API_KEY") {
-		t.Errorf("set: expected confirmation in stderr, got %q", r.stderr)
+	if r.stderr != wantStderr {
+		t.Errorf("set: stderr=%q, want %q", r.stderr, wantStderr)
 	}
 
-	// The implicit get prints only the raw value.
 	r = run("api_key")
 	if r.code() != 0 {
 		t.Fatalf("get: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -134,7 +117,7 @@ func TestSetAndGet(t *testing.T) {
 
 	value := `spaces "quotes" $cash`
 	r = run("set", "api_key", value)
-	if r.code() != 0 || r.stdout != "" || !strings.Contains(r.stderr, "stored API_KEY") {
+	if r.code() != 0 || r.stdout != "" || r.stderr != wantStderr {
 		t.Fatalf("set: exit %d stdout=%q stderr=%q", r.code(), r.stdout, r.stderr)
 	}
 	for _, args := range [][]string{
@@ -163,14 +146,12 @@ func TestSetAndGet(t *testing.T) {
 		}
 	}
 
-	// Overwriting a key replaces the stored value.
 	run("api_key", "sk-updated")
 	r = run("api_key")
 	if !strings.Contains(r.stdout, "sk-updated") {
 		t.Errorf("overwrite: expected updated value, stdout=%q", r.stdout)
 	}
 
-	// Getting a variable that was never set is an error.
 	for _, args := range [][]string{{"no_such_var"}, {"get", "no_such_var"}, {"load", "no_such_var"}} {
 		r = run(args...)
 		if r.code() != 1 || r.stdout != "" || r.err.Error() != `envmagic: NO_SUCH_VAR not found in namespace "default"` {
@@ -178,7 +159,6 @@ func TestSetAndGet(t *testing.T) {
 		}
 	}
 
-	// Explicit get can read names that match subcommands.
 	for _, name := range []string{"get", "set", "load", "list", "key"} {
 		if r = run("set", name, "reserved"); r.code() != 0 {
 			t.Fatalf("set %s: %v", name, r.err)
@@ -186,6 +166,41 @@ func TestSetAndGet(t *testing.T) {
 		if r = run("get", name); r.code() != 0 || r.stdout != "reserved\n" {
 			t.Errorf("get %s: stdout=%q err=%v", name, r.stdout, r.err)
 		}
+	}
+}
+
+func TestStoreWriteErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only store")
+	}
+	run := setup(t)
+	if r := run("set", "API_KEY", "original"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	envFile := filepath.Join(t.TempDir(), "input.env")
+	if err := os.WriteFile(envFile, []byte("API_KEY=updated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(".envmagic", 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args   []string
+		prefix string
+	}{
+		{[]string{"set", "API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
+		{[]string{"API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
+		{[]string{"import", envFile}, "envmagic: write API_KEY: failed to set entry,"},
+	} {
+		t.Run(tc.args[0], func(t *testing.T) {
+			r := run(tc.args...)
+			if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || !strings.HasPrefix(r.err.Error(), tc.prefix) || !strings.Contains(r.err.Error(), "readonly") {
+				t.Errorf("%v: exit=%d stdout=%q stderr=%q err=%v; want %q and readonly error", tc.args, r.code(), r.stdout, r.stderr, r.err, tc.prefix)
+			}
+		})
+	}
+	if r := run("get", "API_KEY"); r.code() != 0 || r.stdout != "original\n" {
+		t.Errorf("rejected writes changed value: stdout=%q err=%v", r.stdout, r.err)
 	}
 }
 
@@ -485,7 +500,6 @@ func TestListAndRemove(t *testing.T) {
 	run("beta", "2")
 	run("gamma", "3")
 
-	// list prints all stored names to stdout.
 	r := run("list")
 	if r.code() != 0 {
 		t.Fatalf("list: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -496,13 +510,11 @@ func TestListAndRemove(t *testing.T) {
 		}
 	}
 
-	// ls is an alias and must produce identical output.
 	r2 := run("ls")
 	if r2.stdout != r.stdout {
 		t.Errorf("ls alias output differs from list\nlist=%q\nls=%q", r.stdout, r2.stdout)
 	}
 
-	// rm removes one entry; the others remain.
 	r = run("rm", "beta")
 	if r.code() != 0 {
 		t.Fatalf("rm: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -515,21 +527,18 @@ func TestListAndRemove(t *testing.T) {
 		t.Error("rm: ALPHA/GAMMA unexpectedly missing after rm beta")
 	}
 
-	// 'remove' is an alias for 'rm'.
 	run("remove", "alpha")
 	r = run("list")
 	if strings.Contains(r.stdout, "ALPHA") {
 		t.Error("remove alias: ALPHA still present")
 	}
 
-	// 'delete' is also an alias for 'rm'.
 	run("delete", "gamma")
 	r = run("list")
 	if strings.Contains(r.stdout, "GAMMA") {
 		t.Error("delete alias: GAMMA still present")
 	}
 
-	// Removing a non-existent entry is an error.
 	r = run("rm", "nonexistent")
 	if r.code() == 0 {
 		t.Error("rm nonexistent: expected non-zero exit")
@@ -540,9 +549,10 @@ func TestListAndRemove(t *testing.T) {
 // values, and exporting them back to both stdout and a file.
 func TestImportAndExport(t *testing.T) {
 	run := setup(t)
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
 
-	// The .env file exercises: plain value, double-quoted value, 'export' prefix,
-	// comment lines, and blank lines.
 	envContent := strings.Join([]string{
 		"# this is a comment",
 		"",
@@ -556,16 +566,15 @@ func TestImportAndExport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Import should succeed and report the variable count.
 	r := run("import", envFile)
 	if r.code() != 0 {
 		t.Fatalf("import: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	if !strings.Contains(r.stderr, "imported 3 variable(s)") {
-		t.Errorf("import: unexpected confirmation %q", r.stderr)
+	wantStderr := fmt.Sprintf("envmagic: imported 3 variable(s) from %s into namespace %q\n", envFile, "default")
+	if r.stderr != wantStderr {
+		t.Errorf("import: stderr=%q, want %q", r.stderr, wantStderr)
 	}
 
-	// Each imported value must be retrievable with the correct content.
 	for varName, wantVal := range map[string]string{
 		"db_host":    "localhost",
 		"api_secret": "tok-abc-123",
@@ -581,7 +590,6 @@ func TestImportAndExport(t *testing.T) {
 		}
 	}
 
-	// Export to stdout produces key=value lines for every stored variable.
 	r = run("export")
 	if r.code() != 0 {
 		t.Fatalf("export stdout: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -592,7 +600,6 @@ func TestImportAndExport(t *testing.T) {
 		}
 	}
 
-	// Export to a file; read it back and verify the round-trip.
 	outFile := filepath.Join(t.TempDir(), "output.env")
 	r = run("export", outFile)
 	if r.code() != 0 {
@@ -648,7 +655,6 @@ func TestImportNamespaceBinding(t *testing.T) {
 func TestImportTemplate(t *testing.T) {
 	run := setup(t)
 
-	// Template with a blank, a defaulted, and a quoted-default variable.
 	tmplContent := strings.Join([]string{
 		"# example env file",
 		"API_KEY=",
@@ -661,7 +667,6 @@ func TestImportTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// --empty stores every name with an empty value, ignoring defaults.
 	r := run("import", "--empty", tmplFile)
 	if r.code() != 0 {
 		t.Fatalf("import --empty: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -677,19 +682,16 @@ func TestImportTemplate(t *testing.T) {
 		}
 	}
 
-	// --interactive and --empty are mutually exclusive.
 	r = run("import", "--interactive", "--empty", tmplFile)
 	if r.code() != 2 {
 		t.Errorf("import -i --empty: expected exit 2, got %d", r.code())
 	}
 
-	// --interactive requires a FILE argument.
 	r = run("import", "--interactive")
 	if r.code() != 2 {
 		t.Errorf("import -i without FILE: expected exit 2, got %d", r.code())
 	}
 
-	// --interactive without a terminal fails and points at --empty.
 	r = run("import", "-i", tmplFile)
 	if r.code() == 0 {
 		t.Error("import -i without TTY: expected non-zero exit")
@@ -698,7 +700,6 @@ func TestImportTemplate(t *testing.T) {
 		t.Errorf("import -i without TTY: expected hint about --empty, got %q", r.err)
 	}
 
-	// Malformed template lines are rejected with the line number.
 	badFile := filepath.Join(t.TempDir(), "bad.env")
 	if err := os.WriteFile(badFile, []byte("GOOD=1\nbroken line\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -732,7 +733,6 @@ func TestDefaultDescription(t *testing.T) {
 func TestNamespaces(t *testing.T) {
 	run := setup(t)
 
-	// Same key name in two namespaces holds independent values.
 	run("-n", "dev", "set", "db_url", "postgres://dev-host/devdb")
 	run("-n", "prod", "db_url", "postgres://prod-host/proddb")
 
@@ -750,7 +750,6 @@ func TestNamespaces(t *testing.T) {
 		t.Errorf("prod get: expected prod-host, stdout=%q", r.stdout)
 	}
 
-	// Keys unique to one namespace must not appear in the other's list.
 	run("-n", "dev", "dev_secret", "only-in-dev")
 	run("-n", "prod", "prod_secret", "only-in-prod")
 
@@ -770,7 +769,6 @@ func TestNamespaces(t *testing.T) {
 		t.Error("prod list: PROD_SECRET missing from prod namespace")
 	}
 
-	// Removing a key from one namespace must not affect the other.
 	run("-n", "dev", "rm", "db_url")
 	r = run("-n", "prod", "db_url")
 	if r.code() != 0 {
@@ -826,13 +824,11 @@ func TestShellInit(t *testing.T) {
 		}
 	}
 
-	// Unknown shell is an error.
 	r := run("shell-init", "powershell")
 	if r.code() == 0 {
 		t.Error("unknown shell: expected non-zero exit")
 	}
 
-	// Missing shell argument is also an error.
 	r = run("shell-init")
 	if r.code() == 0 {
 		t.Error("shell-init no args: expected non-zero exit")
@@ -962,13 +958,11 @@ func TestShellWrapper(t *testing.T) {
 func TestSourceAll(t *testing.T) {
 	run := setup(t)
 
-	// Populate default and staging namespaces.
 	run("db_host", "localhost")
 	run("port", "5432")
 	run("-n", "staging", "db_host", "staging-host")
 	run("-n", "staging", "api_key", "stg-secret")
 
-	// load → export default namespace.
 	r := run("load")
 	if r.code() != 0 {
 		t.Fatalf("source-all default: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -982,7 +976,6 @@ func TestSourceAll(t *testing.T) {
 		t.Error("source-all default: staging values leaked into default output")
 	}
 
-	// -n staging load → export staging namespace only.
 	r = run("-n", "staging", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all staging: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -996,7 +989,6 @@ func TestSourceAll(t *testing.T) {
 		t.Error("source-all staging: default values leaked into staging output")
 	}
 
-	// --debug echoes the export lines to stderr as well.
 	r = run("--debug", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all --debug: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -1006,7 +998,6 @@ func TestSourceAll(t *testing.T) {
 		t.Errorf("source-all --debug: stdout=%q stderr=%q, want %q on both", r.stdout, r.stderr, want)
 	}
 
-	// Empty namespace produces no output and exits 0.
 	r = run("-n", "empty-ns", "load")
 	if r.code() != 0 {
 		t.Fatalf("source-all empty namespace: exit %d\nstderr: %s", r.code(), r.stderr)
@@ -1179,7 +1170,6 @@ func TestImportInvalidName(t *testing.T) {
 func TestInputValidation(t *testing.T) {
 	run := setup(t)
 
-	// Variable names must match [A-Z_][A-Z0-9_]*.
 	for _, badName := range []string{"123start", "has-hyphen", "has space", "has.dot"} {
 		for _, args := range [][]string{{badName, "value"}, {"get", badName}, {"load", badName}, {"set", badName, "value"}} {
 			r := run(args...)
@@ -1202,13 +1192,11 @@ func TestInputValidation(t *testing.T) {
 		}
 	}
 
-	// More than two positional arguments is an error.
 	r := run("valid_key", "value", "extra")
 	if r.code() == 0 {
 		t.Error("too many positional args: expected non-zero exit")
 	}
 
-	// rm requires exactly one name.
 	for _, args := range [][]string{
 		{"rm"},
 		{"rm", "key1", "key2"},
@@ -1219,19 +1207,16 @@ func TestInputValidation(t *testing.T) {
 		}
 	}
 
-	// list rejects extra arguments.
 	r = run("list", "unexpected")
 	if r.code() == 0 {
 		t.Error("list with args: expected non-zero exit")
 	}
 
-	// export rejects more than one file path.
 	r = run("export", "file1.env", "file2.env")
 	if r.code() == 0 {
 		t.Error("export two paths: expected non-zero exit")
 	}
 
-	// import rejects more than one file path.
 	r = run("import", "file1.env", "file2.env")
 	if r.code() == 0 {
 		t.Error("import two paths: expected non-zero exit")

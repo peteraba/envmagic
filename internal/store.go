@@ -113,31 +113,6 @@ func (s *Store) Get(namespace, name string) ([]byte, error) {
 	return data, err
 }
 
-func (s *Store) List(namespace string) ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT name FROM env_vars WHERE namespace = ? ORDER BY name`,
-		namespace,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		if !ValidName(n) {
-			return nil, fmt.Errorf("invalid variable name %q in store", n)
-		}
-		names = append(names, n)
-	}
-
-	return names, rows.Err()
-}
-
 func (s *Store) Delete(namespace, name string) (int64, error) {
 	res, err := s.db.Exec(
 		`DELETE FROM env_vars WHERE namespace = ? AND name = ?`,
