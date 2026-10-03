@@ -1846,3 +1846,72 @@ func TestLooksSecret(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownStoreOwnerAllowed(t *testing.T) {
+	run := setup(t)
+	originalOwner, originalUID := fileOwner, currentUID
+	t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+	currentUID = func() int { return 1234 }
+	fileOwner = func(os.FileInfo) (int, bool) { return 0, false }
+	if r := run("set", "TOKEN", "unknown"); r.code() != 0 || strings.Contains(r.stderr, "skipping") {
+		t.Fatalf("set: %+v", r)
+	}
+	for _, read := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"get", "TOKEN"}, "unknown\n"},
+		{[]string{"load", "TOKEN"}, "export TOKEN=\"unknown\"\n"},
+	} {
+		if r := run(read.args...); r.code() != 0 || r.stdout != read.want || r.stderr != "" {
+			t.Fatalf("%v: %+v", read.args, r)
+		}
+	}
+}
+
+func TestRootSkipsForeignStore(t *testing.T) {
+	run := setup(t)
+	originalOwner, originalUID := fileOwner, currentUID
+	t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+	currentUID = func() int { return 0 }
+	fileOwner = func(os.FileInfo) (int, bool) { return 1000, true }
+	path, err := filepath.Abs(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := run("get", "TOKEN")
+	warning := fmt.Sprintf("envmagic: skipping %s: owned by uid 1000, not by you (uid 0)\n", path)
+	if r.code() != 1 || r.stdout != "" || r.stderr != warning || r.err == nil || !strings.Contains(r.err.Error(), "no .envmagic file found") {
+		t.Fatalf("get as root: %+v", r)
+	}
+}
+
+func TestStoreOwnerChangedWhileOpening(t *testing.T) {
+	for _, args := range [][]string{{"get", "TOKEN"}, {"set", "TOKEN", "updated"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setup(t)
+			if r := run("set", "TOKEN", "original"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return 1000 }
+			checks := 0
+			fileOwner = func(os.FileInfo) (int, bool) {
+				checks++
+				if checks == 1 {
+					return 1000, true
+				}
+				return 2000, true
+			}
+			r := run(args...)
+			if r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), "changed while opening; refusing to use it") {
+				t.Fatalf("owner change: %+v", r)
+			}
+			fileOwner, currentUID = originalOwner, originalUID
+			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "original\n" {
+				t.Fatalf("store changed: %+v", r)
+			}
+		})
+	}
+}

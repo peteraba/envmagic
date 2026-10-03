@@ -138,7 +138,7 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (s
 		}
 	}
 
-	dbPath, err := findOrCreateStorePath(cmd)
+	dbPath, checked, err := findOrCreateStorePath(cmd)
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +148,7 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (s
 		return "", errorf("load key: %v", err)
 	}
 
-	s, err := internal.OpenStore(dbPath)
+	s, err := openCheckedStore(dbPath, checked)
 	if err != nil {
 		return "", errorf("open store: %v", err)
 	}

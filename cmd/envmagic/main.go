@@ -23,6 +23,10 @@ var version = "v0.5.0"
 
 var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
+var fileOwner = ownerUID
+
+var currentUID = os.Getuid
+
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
 		os.Exit(1)
@@ -295,7 +299,11 @@ func runSetFromStdin(cmd *cli.Command, namespace, name string) error {
 	if err != nil {
 		return errorf("getcwd: %v", err)
 	}
-	if _, found := findEnvmagic(cwd); !found && !cmd.Root().Bool("yes") {
+	if _, checked := findEnvmagic(cwd, false); checked == nil && !cmd.Root().Bool("yes") {
+		_, _ = findEnvmagic(cwd, true)
+		if err := refuseSkippedStore(filepath.Join(cwd, ".envmagic")); err != nil {
+			return err
+		}
 		return errorf("no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store")
 	}
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20+1))
@@ -404,8 +412,8 @@ func openActiveStore() (*internal.Store, []byte, error) {
 	if err != nil {
 		return nil, nil, errorf("getcwd: %v", err)
 	}
-	dbPath, found := findEnvmagic(cwd)
-	if !found {
+	dbPath, checked := findEnvmagic(cwd, true)
+	if checked == nil {
 		return nil, nil, errorf("no .envmagic file found in %s or any parent", cwd)
 	}
 
@@ -414,7 +422,7 @@ func openActiveStore() (*internal.Store, []byte, error) {
 		return nil, nil, errorf("load key: %v", err)
 	}
 
-	s, err := internal.OpenStore(dbPath)
+	s, err := openCheckedStore(dbPath, checked)
 	if err != nil {
 		return nil, nil, errorf("open store: %v", err)
 	}
@@ -425,44 +433,82 @@ func openActiveStore() (*internal.Store, []byte, error) {
 // findOrCreateStorePath returns the path to the nearest .envmagic file,
 // prompting to create one in the current directory if none is found.
 // With --yes or ENVMAGIC_NONINTERACTIVE=1, creates without prompting.
-func findOrCreateStorePath(cmd *cli.Command) (string, error) {
+func findOrCreateStorePath(cmd *cli.Command) (string, os.FileInfo, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", errorf("getcwd: %v", err)
+		return "", nil, errorf("getcwd: %v", err)
 	}
-	dbPath, found := findEnvmagic(cwd)
-	if found {
-		return dbPath, nil
+	dbPath, checked := findEnvmagic(cwd, true)
+	if checked != nil {
+		return dbPath, checked, nil
 	}
 
 	target := filepath.Join(cwd, ".envmagic")
+	if err := refuseSkippedStore(target); err != nil {
+		return "", nil, err
+	}
 	if cmd.Root().Bool("yes") {
-		return target, nil
+		return target, nil, nil
 	}
 	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
 	if err != nil {
-		return "", errorf("read prompt: %v", err)
+		return "", nil, errorf("read prompt: %v", err)
 	}
 	if !ok {
-		return "", cli.Exit("envmagic: aborted", 1)
+		return "", nil, cli.Exit("envmagic: aborted", 1)
 	}
 
-	return target, nil
+	return target, nil, nil
 }
 
-func findEnvmagic(start string) (string, bool) {
+func refuseSkippedStore(target string) error {
+	if _, err := os.Lstat(target); err == nil {
+		return errorf("refusing to overwrite skipped store %s", target)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errorf("stat %s: %v", target, err)
+	}
+	return nil
+}
+
+func findEnvmagic(start string, warn bool) (string, os.FileInfo) {
 	dir := start
 	for {
 		candidate := filepath.Join(dir, ".envmagic")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
+			if uid, known := fileOwner(info); known && uid != currentUID() {
+				if warn {
+					fmt.Fprintf(os.Stderr, "envmagic: skipping %s: owned by uid %d, not by you (uid %d)\n", candidate, uid, currentUID())
+				}
+			} else {
+				return candidate, info
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", false
+			return "", nil
 		}
 		dir = parent
 	}
+}
+
+func openCheckedStore(path string, checked os.FileInfo) (*internal.Store, error) {
+	s, err := internal.OpenStore(path)
+	if err != nil {
+		return nil, err
+	}
+	if checked != nil {
+		// ponytail: SQLite opens by path, so a swap after this re-check is still possible; a full fix needs opening by descriptor.
+		now, err := os.Stat(path)
+		if err != nil || !os.SameFile(checked, now) {
+			_ = s.Close()
+			return nil, fmt.Errorf("store %s changed while opening; refusing to use it", path)
+		}
+		if uid, known := fileOwner(now); known && uid != currentUID() {
+			_ = s.Close()
+			return nil, fmt.Errorf("store %s changed while opening; refusing to use it", path)
+		}
+	}
+	return s, nil
 }
 
 // shellQuote returns a shell-escaped version of s, suitable for use in export statements.
