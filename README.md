@@ -142,7 +142,7 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 | `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline                      |
 | `envmagic [-n NS] NAME`                  | Alias of `get NAME`                                              |
 | `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell            |
-| `envmagic [-n NS] set NAME VALUE`        | Encrypt and store `VALUE` under `NAME`                           |
+| `envmagic [-n NS] set NAME [VALUE]`      | Encrypt and store `VALUE` under `NAME` (piped stdin if omitted)  |
 | `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`                           |
 | `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                                        |
 | `envmagic [-n NS] rm NAME`               | Remove a stored entry                                            |
@@ -155,6 +155,8 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 | `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
 | `envmagic help`                          | Show help                                                        |
 | `envmagic --version`                     | Show version                                                     |
+
+For real secrets, prefer `printf '%s' "$SECRET" | envmagic set NAME` to keep the value out of shell history and process arguments; stdin is limited to 1 MiB, removes exactly one trailing newline (LF or CRLF), and refuses empty input (use `envmagic set NAME ''` to store an empty value). Creating a store with the stdin form requires `--yes` or `ENVMAGIC_NONINTERACTIVE=1`.
 
 `import -i` is short for `import --interactive`. In the form, Enter keeps the
 template's value. Input is masked for names containing `KEY`, `SECRET`, `TOKEN`

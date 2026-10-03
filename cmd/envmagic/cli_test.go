@@ -192,6 +192,7 @@ func TestSetPreservesWhitespace(t *testing.T) {
 		name  string
 		value string
 	}{
+		{"empty", ""},
 		{"padded", "  padded  "},
 		{"leading newline", "\nleading newline"},
 		{"trailing newline", "trailing newline\n"},
@@ -212,6 +213,342 @@ func TestSetPreservesWhitespace(t *testing.T) {
 						t.Errorf("get: exit=%d stdout=%q stderr=%q err=%v; want stdout=%q", r.code(), r.stdout, r.stderr, r.err, tc.value+"\n")
 					}
 				})
+			}
+		})
+	}
+}
+
+func setTestStdin(t *testing.T, value string) *os.File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdin
+	os.Stdin = input
+	t.Cleanup(func() {
+		os.Stdin = original
+		_ = input.Close()
+	})
+	return input
+}
+
+func TestSetStdin(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		value string
+	}{
+		{"spaces and inner newline", "  first \nsecond  \n", "  first \nsecond  "},
+		{"two trailing newlines", "a\n\n", "a\n"},
+		{"CRLF", "a\r\n", "a"},
+		{"two trailing CRLFs", "a\r\n\r\n", "a\r\n"},
+		{"no newline", " \tsecret \t", " \tsecret \t"},
+		{"carriage return only", "a\r", "a\r"},
+		{"non-UTF-8", "\xff\xfe\n", "\xff\xfe"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := setup(t)
+			setTestStdin(t, test.input)
+			if r := run("-n", "other", "set", "token"); r.code() != 0 || r.stdout != "" {
+				t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+			for _, args := range [][]string{{"-n", "other", "get", "TOKEN"}, {"-n", "other", "TOKEN"}} {
+				if r := run(args...); r.code() != 0 || r.stdout != test.value+"\n" || r.stderr != "" {
+					t.Errorf("%v: exit=%d stdout=%q stderr=%q err=%v; want stdout=%q", args, r.code(), r.stdout, r.stderr, r.err, test.value+"\n")
+				}
+			}
+			if r := run("get", "TOKEN"); r.code() != 1 || r.stdout != "" || !strings.Contains(r.err.Error(), "not found") {
+				t.Errorf("default namespace: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+		})
+	}
+}
+
+func TestSetStdinReadError(t *testing.T) {
+	run := setupBare(t)
+	keyPath, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, output, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdin
+	os.Stdin = input
+	t.Cleanup(func() {
+		os.Stdin = original
+		_ = output.Close()
+	})
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("--yes", "set", "TOKEN"); r.code() != 1 || r.stdout != "" || !strings.Contains(r.err.Error(), "read stdin:") {
+		t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	for _, path := range []string{".envmagic", keyPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("failed read created %s: %v", path, err)
+		}
+	}
+}
+
+func TestSetStdinTerminal(t *testing.T) {
+	run := setup(t)
+	input := setTestStdin(t, "secret\n")
+	original := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = original })
+	r := run("set", "TOKEN")
+	want := "usage: envmagic set [-n NS] NAME [VALUE]; without VALUE, pipe the value on stdin (e.g. printf '%s' \"$SECRET\" | envmagic set NAME)"
+	if r.code() != 2 || r.stdout != "" || r.err.Error() != want {
+		t.Errorf("set: exit=%d stdout=%q err=%v; want exit 2 and %q", r.code(), r.stdout, r.err, want)
+	}
+	remaining, err := io.ReadAll(input)
+	if err != nil || string(remaining) != "secret\n" {
+		t.Errorf("stdin consumed: remaining=%q err=%v", remaining, err)
+	}
+}
+
+func TestCreateStorePrompt(t *testing.T) {
+	for _, args := range [][]string{{"set", "TOKEN", "v"}, {"TOKEN", "v"}, {"import", "input.env"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setupBare(t)
+			t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+			if args[0] == "import" {
+				if err := os.WriteFile("input.env", []byte("TOKEN=v\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setTestStdin(t, "y\n")
+			r := run(args...)
+			if r.code() != 0 || !strings.Contains(r.stderr, "No .envmagic file found. Create ") || !strings.Contains(r.stderr, "? [y/N]: ") {
+				t.Fatalf("exit=%d stderr=%q err=%v; want creation prompt", r.code(), r.stderr, r.err)
+			}
+			if _, err := os.Stat(".envmagic"); err != nil {
+				t.Fatalf("store not created: %v", err)
+			}
+			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "v\n" {
+				t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+		})
+	}
+}
+
+func TestSetStdinRejectsEmptyOrOversized(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"LF", "\n", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"CRLF", "\r\n", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"oversized", strings.Repeat("x", 1<<20+1), "value on stdin is larger than 1 MiB"},
+	} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", tc.name, existing), func(t *testing.T) {
+				run := setupBare(t)
+				if existing {
+					if r := run("--yes", "set", "TOKEN", "original"); r.code() != 0 {
+						t.Fatal(r.err)
+					}
+				}
+				setTestStdin(t, tc.input)
+				if r := run("--yes", "set", "TOKEN"); r.code() != 2 || r.stdout != "" || r.err.Error() != tc.want {
+					t.Fatalf("set: exit=%d stdout bytes=%d err=%v; want exit 2 and %q", r.code(), len(r.stdout), r.err, tc.want)
+				}
+				if existing {
+					if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "original\n" {
+						t.Errorf("existing value changed: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+					}
+					return
+				}
+				keyPath, err := internal.KeyPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{".envmagic", keyPath} {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Errorf("rejected set created %s: %v", path, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSetStdinSizeLimit(t *testing.T) {
+	run := setupBare(t)
+	value := strings.Repeat("x", 1<<20)
+	setTestStdin(t, value)
+	if r := run("--yes", "set", "TOKEN"); r.code() != 0 || r.stdout != "" {
+		t.Fatalf("set: exit=%d stdout bytes=%d err=%v", r.code(), len(r.stdout), r.err)
+	}
+	s, key, err := openActiveStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	enc, err := s.Get("default", "TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := internal.Decrypt(key, enc, internal.AD("default", "TOKEN"))
+	if err != nil || string(plain) != value {
+		t.Errorf("stored value: bytes=%d err=%v; want exactly 1 MiB unchanged", len(plain), err)
+	}
+}
+
+func TestSetStdinReadLimit(t *testing.T) {
+	run := setupBare(t)
+	input := setTestStdin(t, strings.Repeat("x", 1<<20+2))
+	if r := run("--yes", "set", "TOKEN"); r.code() != 2 || r.err.Error() != "value on stdin is larger than 1 MiB" {
+		t.Fatalf("set: exit=%d err=%v", r.code(), r.err)
+	}
+	remaining, err := io.ReadAll(input)
+	if err != nil || string(remaining) != "x" {
+		t.Errorf("read past limit: remaining bytes=%d err=%v; want one unread byte", len(remaining), err)
+	}
+}
+
+func TestSetStdinUsesParentStore(t *testing.T) {
+	run := setup(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	if err := os.Mkdir("child", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	setTestStdin(t, "secret\n")
+	if r := run("set", "TOKEN"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "secret\n" {
+		t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	if _, err := os.Stat(".envmagic"); !os.IsNotExist(err) {
+		t.Errorf("unexpected child store: %v", err)
+	}
+}
+
+func TestSetValueDoesNotReadStdin(t *testing.T) {
+	for _, args := range [][]string{{"set", "TOKEN", "value"}, {"TOKEN", "value"}, {"set", "TOKEN", "-"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setup(t)
+			input := setTestStdin(t, "unused\n")
+			if r := run(args...); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			if r := run("TOKEN"); r.code() != 0 || r.stdout != args[len(args)-1]+"\n" {
+				t.Errorf("implicit get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+			remaining, err := io.ReadAll(input)
+			if err != nil || string(remaining) != "unused\n" {
+				t.Errorf("stdin consumed: remaining=%q err=%v", remaining, err)
+			}
+		})
+	}
+}
+
+func TestCheckSetArgs(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		for _, count := range []int{0, 1, 2, 3} {
+			t.Run(fmt.Sprintf("terminal=%t/count=%d", terminal, count), func(t *testing.T) {
+				r := result{err: checkSetArgs(count, terminal)}
+				if count == 2 || (count == 1 && !terminal) {
+					if r.err != nil {
+						t.Fatalf("valid args: %v", r.err)
+					}
+					return
+				}
+				want := "usage: envmagic set [-n NS] NAME [VALUE]; without VALUE, pipe the value on stdin (e.g. printf '%s' \"$SECRET\" | envmagic set NAME)"
+				if r.code() != 2 || r.err.Error() != want {
+					t.Errorf("exit=%d err=%v; want exit 2 and %q", r.code(), r.err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestSetStdinRejectsNUL(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			run := setupBare(t)
+			if existing {
+				if r := run("--yes", "set", "GOOD", "valid"); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+			}
+			setTestStdin(t, "a\x00b\n")
+			r := run("--yes", "set", "name")
+			if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for NAME contains a NUL byte" {
+				t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+			if existing {
+				if r := run("list"); r.code() != 0 || r.stdout != "GOOD\n" {
+					t.Errorf("list after rejected set: stdout=%q err=%v", r.stdout, r.err)
+				}
+				return
+			}
+			keyPath, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{".envmagic", keyPath} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("rejected set created %s: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSetStdinRequiresYesBeforeReading(t *testing.T) {
+	run := setupBare(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	input := setTestStdin(t, "yes\n")
+	r := run("set", "TOKEN")
+	want := "envmagic: no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store"
+	if r.code() != 1 || r.stdout != "" || r.err.Error() != want || r.stderr != "" {
+		t.Errorf("set: exit=%d stdout=%q stderr=%q err=%v; want %q and no prompt", r.code(), r.stdout, r.stderr, r.err, want)
+	}
+	remaining, err := io.ReadAll(input)
+	if err != nil || string(remaining) != "yes\n" {
+		t.Errorf("stdin consumed before creation check: remaining=%q err=%v", remaining, err)
+	}
+	keyPath, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".envmagic", keyPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("rejected set created %s: %v", path, err)
+		}
+	}
+}
+
+func TestSetStdinCreatesStore(t *testing.T) {
+	for _, mode := range []string{"yes", "noninteractive"} {
+		t.Run(mode, func(t *testing.T) {
+			run := setupBare(t)
+			t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+			setTestStdin(t, "  secret  \n")
+			args := []string{"set", "TOKEN"}
+			if mode == "yes" {
+				args = append([]string{"--yes"}, args...)
+			} else {
+				t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
+			}
+			if r := run(args...); r.code() != 0 || r.stdout != "" {
+				t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "  secret  \n" {
+				t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 			}
 		})
 	}
@@ -1308,7 +1645,6 @@ func TestInputValidation(t *testing.T) {
 		{"get", "name", "extra"},
 		{"load", "A", "B"},
 		{"set"},
-		{"set", "name"},
 		{"set", "name", "value", "extra"},
 		{"set", "TOKEN", "-", "extra"},
 	} {
