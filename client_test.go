@@ -1,6 +1,7 @@
 package envmagic_test
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -78,8 +79,20 @@ func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	store := filepath.Join(dir, ".envmagic")
 
-	c0, err := envmagic.OpenWithPath(store)
+	c0, err := internal.OpenStore(store)
 	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c0.Close() })
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := internal.Encrypt(key, []byte("cwd value"), internal.AD(envmagic.DefaultNamespace, "KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c0.Set(envmagic.DefaultNamespace, "KEY", enc); err != nil {
 		t.Fatal(err)
 	}
 	_ = c0.Close()
@@ -92,8 +105,38 @@ func TestOpen_usesDotEnvmagicInCwd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 
-	if _, err := c.Get(envmagic.DefaultNamespace, "ANY"); !errors.Is(err, envmagic.ErrNotFound) {
-		t.Fatalf("Open cwd store: Get missing: %v", err)
+	if got, err := c.Get(envmagic.DefaultNamespace, "KEY"); err != nil || got != "cwd value" {
+		t.Fatalf("Open cwd store: got=%q err=%v", got, err)
+	}
+}
+
+func TestOpenWithKeyAndPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	keyPath, storePath := filepath.Join(dir, "custom-key"), filepath.Join(dir, "custom-store")
+	key := bytes.Repeat([]byte{1}, 32)
+	if err := internal.WriteKey(keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+	store, err := internal.OpenStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	enc, err := internal.Encrypt(key, []byte("custom value"), internal.AD("dev", "KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("dev", "KEY", enc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := envmagic.OpenWithKeyAndPath(keyPath, storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if got, err := c.Get("dev", "KEY"); err != nil || got != "custom value" {
+		t.Fatalf("Get: got=%q err=%v", got, err)
 	}
 }
 

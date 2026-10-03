@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -698,10 +699,9 @@ func TestImportAndExport(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("export stdout: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	for _, name := range []string{"DB_HOST", "API_SECRET", "PORT"} {
-		if !strings.Contains(r.stdout, name+"=") {
-			t.Errorf("export stdout: missing %s in %q", name, r.stdout)
-		}
+	wantExport := "API_SECRET=\"tok-abc-123\"\nDB_HOST=\"localhost\"\nPORT=\"5432\"\n"
+	if r.stdout != wantExport {
+		t.Errorf("export stdout: got %q, want %q", r.stdout, wantExport)
 	}
 
 	outFile := filepath.Join(t.TempDir(), "output.env")
@@ -716,10 +716,8 @@ func TestImportAndExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read exported file: %v", err)
 	}
-	for _, name := range []string{"DB_HOST", "API_SECRET", "PORT"} {
-		if !strings.Contains(string(exported), name+"=") {
-			t.Errorf("exported file: missing %s", name)
-		}
+	if string(exported) != wantExport {
+		t.Errorf("exported file: got %q, want %q", exported, wantExport)
 	}
 }
 
@@ -1314,17 +1312,175 @@ func TestInputValidation(t *testing.T) {
 	}
 
 	r = run("list", "unexpected")
-	if r.code() == 0 {
-		t.Error("list with args: expected non-zero exit")
+	if r.code() != 2 {
+		t.Errorf("list with args: exit=%d, want 2", r.code())
 	}
 
 	r = run("export", "file1.env", "file2.env")
-	if r.code() == 0 {
-		t.Error("export two paths: expected non-zero exit")
+	if r.code() != 2 {
+		t.Errorf("export two paths: exit=%d, want 2", r.code())
 	}
 
 	r = run("import", "file1.env", "file2.env")
-	if r.code() == 0 {
-		t.Error("import two paths: expected non-zero exit")
+	if r.code() != 2 {
+		t.Errorf("import two paths: exit=%d, want 2", r.code())
+	}
+}
+
+func TestImportEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"newline", `KEY="a\nb"`, "a\nb\n"},
+		{"backslash", `KEY="a\\b"`, "a\\b\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := setup(t)
+			path := filepath.Join(t.TempDir(), "input.env")
+			if err := os.WriteFile(path, []byte(tc.input+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if r := run("import", path); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			if r := run("get", "KEY"); r.code() != 0 || r.stdout != tc.want {
+				t.Fatalf("stdout=%q err=%v, want %q", r.stdout, r.err, tc.want)
+			}
+		})
+	}
+}
+
+func TestImportUnterminatedQuotes(t *testing.T) {
+	for _, tc := range []struct{ name, input string }{
+		{"single", "KEY='value"},
+		{"double", `KEY="value`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := setup(t)
+			path := filepath.Join(t.TempDir(), "input.env")
+			if err := os.WriteFile(path, []byte(tc.input+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := run("import", path)
+			want := "envmagic: parse: line 1: unterminated " + tc.name + "-quoted value"
+			if r.code() != 1 || r.stdout != "" || r.err == nil || r.err.Error() != want {
+				t.Fatalf("exit=%d stdout=%q err=%v, want %q", r.code(), r.stdout, r.err, want)
+			}
+		})
+	}
+}
+
+func TestFindEnvmagicSkipsDirectory(t *testing.T) {
+	run := setup(t)
+	if r := run("set", "KEY", "parent value"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if err := os.MkdirAll(filepath.Join("child", ".envmagic"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	if r := run("get", "KEY"); r.code() != 0 || r.stdout != "parent value\n" {
+		t.Fatalf("stdout=%q err=%v; want value from parent store", r.stdout, r.err)
+	}
+}
+
+func TestKeySetPermissions(t *testing.T) {
+	run := setupBare(t)
+	key := bytes.Repeat([]byte{1}, 32)
+	if r := run("key", "--set", base64.StdEncoding.EncodeToString(key)); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	path, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("key=%x err=%v, want %x", got, err, key)
+	}
+	for path, want := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s: mode=%#o, want %#o", path, got, want)
+		}
+	}
+}
+
+func TestKeySetRejectsInvalidKey(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"base64", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)) + "!", "invalid base64:"},
+		{"length", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 16)), "key must be 32 bytes (got 16 after decoding)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := setupBare(t)
+			path, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := bytes.Repeat([]byte{1}, 32)
+			if err := internal.WriteKey(path, key); err != nil {
+				t.Fatal(err)
+			}
+			r := run("key", "--set", tc.input)
+			if r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), tc.want) || strings.Contains(r.stderr, "key restored") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want %q", r.code(), r.stdout, r.stderr, r.err, tc.want)
+			}
+			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, key) {
+				t.Fatalf("existing key changed: key=%x err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestKeyWriteErrors(t *testing.T) {
+	for _, command := range []string{"create", "set"} {
+		for _, operation := range []string{"directory", "write"} {
+			t.Run(command+"/"+operation, func(t *testing.T) {
+				run := setupBare(t)
+				path, err := internal.KeyPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				blocked := filepath.Dir(path)
+				want := "failed to create key file directory"
+				if operation == "write" {
+					if err := os.Mkdir(blocked, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					blocked = path
+					want = "failed to write key file"
+				}
+				if err := os.Symlink(filepath.Join(t.TempDir(), "missing", "key"), blocked); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"key"}
+				if command == "set" {
+					args = append(args, "--set", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+				}
+				r := run(args...)
+				if r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), want) || strings.Contains(r.stderr, "generated new encryption key") || strings.Contains(r.stderr, "key restored") {
+					t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want %q", r.code(), r.stdout, r.stderr, r.err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestLooksSecret(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"API_KEY", true},
+		{"CLIENT_SECRET", true},
+		{"AUTH_TOKEN", true},
+		{"DB_PASSWORD", true},
+		{"DB_PORT", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksSecret(tc.name); got != tc.want {
+				t.Fatalf("looksSecret(%q)=%t, want %t", tc.name, got, tc.want)
+			}
+		})
 	}
 }

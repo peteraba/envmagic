@@ -65,3 +65,21 @@ func TestADUnambiguous(t *testing.T) {
 		}
 	}
 }
+
+func TestCryptoRejectsAES128Key(t *testing.T) {
+	key := bytes.Repeat([]byte{1}, 16)
+	for _, tc := range []struct {
+		name string
+		run  func([]byte, []byte, []byte) ([]byte, error)
+	}{
+		{"encrypt", Encrypt},
+		{"decrypt", Decrypt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.run(key, []byte("value"), AD("default", "KEY"))
+			if err == nil || err.Error() != tc.name+": key must be 32 bytes" || got != nil {
+				t.Fatalf("got=%x err=%v; want no data and %q", got, err, tc.name+": key must be 32 bytes")
+			}
+		})
+	}
+}

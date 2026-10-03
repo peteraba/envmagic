@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+func TestOpenStorePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode=%#o, want 0600", got)
+	}
+}
+
 func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "a?_pragma=writable_schema(1)&b=")
