@@ -23,6 +23,8 @@ var version = "v0.5.0"
 
 var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
+var fileOwner = ownerUID
+
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
 		os.Exit(1)
@@ -436,6 +438,9 @@ func findOrCreateStorePath(cmd *cli.Command) (string, error) {
 	}
 
 	target := filepath.Join(cwd, ".envmagic")
+	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		return "", errorf("refusing to overwrite skipped store %s", target)
+	}
 	if cmd.Root().Bool("yes") {
 		return target, nil
 	}
@@ -455,7 +460,11 @@ func findEnvmagic(start string) (string, bool) {
 	for {
 		candidate := filepath.Join(dir, ".envmagic")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
+			if uid, known := fileOwner(info); known && uid != os.Getuid() {
+				fmt.Fprintf(os.Stderr, "envmagic: skipping %s: owned by uid %d, not by you (uid %d)\n", candidate, uid, os.Getuid())
+			} else {
+				return candidate, true
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
