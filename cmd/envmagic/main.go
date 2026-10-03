@@ -26,10 +26,14 @@ func main() {
 }
 
 func newApp() *cli.Command {
-	return &cli.Command{
+	app := &cli.Command{
 		Name:    "envmagic",
 		Usage:   "encrypted env-var store, scoped to your project directory",
 		Version: version,
+		OnUsageError: func(_ context.Context, cmd *cli.Command, err error, _ bool) error {
+			_, _ = fmt.Fprintf(cmd.ErrWriter, "Incorrect Usage: %s\n", err)
+			return err
+		},
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "namespace",
@@ -124,6 +128,11 @@ func newApp() *cli.Command {
 			},
 		},
 	}
+	_ = app.Walk(func(cmd *cli.Command) error {
+		cmd.OnUsageError = app.OnUsageError
+		return nil
+	})
+	return app
 }
 
 func cmdKey(_ context.Context, cmd *cli.Command) error {
