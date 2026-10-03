@@ -10,6 +10,7 @@ import (
 )
 
 func TestOpenStorePermissions(t *testing.T) {
+	permissiveUmask(t)
 	path := filepath.Join(t.TempDir(), ".envmagic")
 	store, err := OpenStore(path)
 	if err != nil {

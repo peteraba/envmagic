@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/peteraba/envmagic"
+	"github.com/peteraba/envmagic/internal"
 )
 
 func Example() {
@@ -27,6 +28,14 @@ func Example() {
 		if err := os.Setenv(name, dir); err != nil {
 			panic(err)
 		}
+	}
+
+	keyPath, err := internal.KeyPath()
+	if err != nil {
+		panic(err)
+	}
+	if rel, err := filepath.Rel(dir, keyPath); err != nil || !filepath.IsLocal(rel) {
+		panic(fmt.Sprintf("key path %q is outside example directory %q: %v", keyPath, dir, err))
 	}
 
 	c, err := envmagic.OpenWithPath(filepath.Join(dir, ".envmagic"))

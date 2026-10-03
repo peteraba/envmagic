@@ -27,6 +27,22 @@ type result struct {
 	err    error
 }
 
+func isolateKeyPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData"} {
+		t.Setenv(name, dir)
+	}
+	path, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := filepath.Rel(dir, path); err != nil || !filepath.IsLocal(rel) {
+		t.Fatalf("key path %q is outside test directory %q: %v", path, dir, err)
+	}
+	return path
+}
+
 func (r result) code() int {
 	if r.err == nil {
 		return 0
@@ -61,7 +77,7 @@ func setupBare(t *testing.T) func(args ...string) result {
 
 	dir := t.TempDir()
 	t.Chdir(dir)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateKeyPath(t)
 
 	return func(args ...string) result {
 		rOut, wOut, _ := os.Pipe()
@@ -493,7 +509,11 @@ func TestNULRejectedBeforeCreation(t *testing.T) {
 			if r.code() != 1 || r.stdout != "" || r.err.Error() != "envmagic: value for NAME contains a NUL byte" {
 				t.Errorf("%s: exit=%d stdout=%q err=%v", command, r.code(), r.stdout, r.err)
 			}
-			for _, path := range []string{".envmagic", filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "envmagic", "key")} {
+			keyPath, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{".envmagic", keyPath} {
 				if _, err := os.Stat(path); !os.IsNotExist(err) {
 					t.Errorf("rejected %s created %s: stat err=%v", command, path, err)
 				}
@@ -972,7 +992,7 @@ func TestShellWrapper(t *testing.T) {
 				t.Skip(shell + " is not on PATH")
 			}
 			run := setup(t)
-			home := t.TempDir()
+			home := os.Getenv("HOME")
 			value := `raw "quotes" $cash`
 			for _, args := range [][]string{
 				{"set", "name", value},
@@ -1037,6 +1057,7 @@ func TestShellWrapper(t *testing.T) {
 					"ZDOTDIR=" + home,
 					"PATH=" + os.Getenv("PATH"),
 					"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
+					"AppData=" + os.Getenv("AppData"),
 				}
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
@@ -1383,6 +1404,7 @@ func TestFindEnvmagicSkipsDirectory(t *testing.T) {
 }
 
 func TestKeySetPermissions(t *testing.T) {
+	permissiveUmask(t)
 	run := setupBare(t)
 	key := bytes.Repeat([]byte{1}, 32)
 	if r := run("key", "--set", base64.StdEncoding.EncodeToString(key)); r.code() != 0 {

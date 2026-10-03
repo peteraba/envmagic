@@ -8,12 +8,24 @@ import (
 	"testing"
 )
 
-func TestLoadOrCreateKeyRejectsInvalidLength(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+func isolateKeyPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"XDG_CONFIG_HOME", "HOME", "AppData"} {
+		t.Setenv(name, dir)
+	}
 	path, err := KeyPath()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if rel, err := filepath.Rel(dir, path); err != nil || !filepath.IsLocal(rel) {
+		t.Fatalf("key path %q is outside test directory %q: %v", path, dir, err)
+	}
+	return path
+}
+
+func TestLoadOrCreateKeyRejectsInvalidLength(t *testing.T) {
+	path := isolateKeyPath(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -31,11 +43,7 @@ func TestLoadOrCreateKeyRejectsInvalidLength(t *testing.T) {
 }
 
 func TestLoadOrCreateKeyRejectsDirectory(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	path, err := KeyPath()
-	if err != nil {
-		t.Fatal(err)
-	}
+	path := isolateKeyPath(t)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +68,7 @@ func TestLoadKeyRejectsAES128Key(t *testing.T) {
 }
 
 func TestWriteKeyPermissions(t *testing.T) {
+	permissiveUmask(t)
 	path := filepath.Join(t.TempDir(), "envmagic", "key")
 	if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err != nil {
 		t.Fatal(err)
