@@ -192,6 +192,7 @@ func TestSetPreservesWhitespace(t *testing.T) {
 		name  string
 		value string
 	}{
+		{"empty", ""},
 		{"padded", "  padded  "},
 		{"leading newline", "\nleading newline"},
 		{"trailing newline", "trailing newline\n"},
@@ -246,8 +247,6 @@ func TestSetStdin(t *testing.T) {
 		{"two trailing newlines", "a\n\n", "a\n"},
 		{"CRLF", "a\r\n", "a"},
 		{"two trailing CRLFs", "a\r\n\r\n", "a\r\n"},
-		{"empty", "", ""},
-		{"newline only", "\n", ""},
 		{"no newline", " \tsecret \t", " \tsecret \t"},
 		{"carriage return only", "a\r", "a\r"},
 		{"non-UTF-8", "\xff\xfe\n", "\xff\xfe"},
@@ -271,16 +270,150 @@ func TestSetStdin(t *testing.T) {
 }
 
 func TestSetStdinReadError(t *testing.T) {
-	run := setup(t)
-	input := setTestStdin(t, "secret")
+	run := setupBare(t)
+	keyPath, err := internal.KeyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, output, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdin
+	os.Stdin = input
+	t.Cleanup(func() {
+		os.Stdin = original
+		_ = output.Close()
+	})
 	if err := input.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if r := run("set", "TOKEN"); r.code() != 1 || r.stdout != "" || !strings.Contains(r.err.Error(), "read stdin:") {
+	if r := run("--yes", "set", "TOKEN"); r.code() != 1 || r.stdout != "" || !strings.Contains(r.err.Error(), "read stdin:") {
 		t.Fatalf("set: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 	}
-	if r := run("list"); r.code() != 0 || r.stdout != "" {
-		t.Errorf("list after failed read: stdout=%q err=%v", r.stdout, r.err)
+	for _, path := range []string{".envmagic", keyPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("failed read created %s: %v", path, err)
+		}
+	}
+}
+
+func TestSetStdinTerminal(t *testing.T) {
+	run := setup(t)
+	input := setTestStdin(t, "secret\n")
+	original := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = original })
+	r := run("set", "TOKEN")
+	want := "usage: envmagic set [-n NS] NAME [VALUE]; without VALUE, pipe the value on stdin (e.g. printf '%s' \"$SECRET\" | envmagic set NAME)"
+	if r.code() != 2 || r.stdout != "" || r.err.Error() != want {
+		t.Errorf("set: exit=%d stdout=%q err=%v; want exit 2 and %q", r.code(), r.stdout, r.err, want)
+	}
+	remaining, err := io.ReadAll(input)
+	if err != nil || string(remaining) != "secret\n" {
+		t.Errorf("stdin consumed: remaining=%q err=%v", remaining, err)
+	}
+}
+
+func TestCreateStorePrompt(t *testing.T) {
+	for _, args := range [][]string{{"set", "TOKEN", "v"}, {"TOKEN", "v"}, {"import", "input.env"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setupBare(t)
+			t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+			if args[0] == "import" {
+				if err := os.WriteFile("input.env", []byte("TOKEN=v\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setTestStdin(t, "y\n")
+			r := run(args...)
+			if r.code() != 0 || !strings.Contains(r.stderr, "No .envmagic file found. Create ") || !strings.Contains(r.stderr, "? [y/N]: ") {
+				t.Fatalf("exit=%d stderr=%q err=%v; want creation prompt", r.code(), r.stderr, r.err)
+			}
+			if _, err := os.Stat(".envmagic"); err != nil {
+				t.Fatalf("store not created: %v", err)
+			}
+			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "v\n" {
+				t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+			}
+		})
+	}
+}
+
+func TestSetStdinRejectsEmptyOrOversized(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"LF", "\n", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"CRLF", "\r\n", "no value on stdin; to store an empty value use: envmagic set NAME ''"},
+		{"oversized", strings.Repeat("x", 1<<20+1), "value on stdin is larger than 1 MiB"},
+	} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", tc.name, existing), func(t *testing.T) {
+				run := setupBare(t)
+				if existing {
+					if r := run("--yes", "set", "TOKEN", "original"); r.code() != 0 {
+						t.Fatal(r.err)
+					}
+				}
+				setTestStdin(t, tc.input)
+				if r := run("--yes", "set", "TOKEN"); r.code() != 2 || r.stdout != "" || r.err.Error() != tc.want {
+					t.Fatalf("set: exit=%d stdout bytes=%d err=%v; want exit 2 and %q", r.code(), len(r.stdout), r.err, tc.want)
+				}
+				if existing {
+					if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "original\n" {
+						t.Errorf("existing value changed: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+					}
+					return
+				}
+				keyPath, err := internal.KeyPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{".envmagic", keyPath} {
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Errorf("rejected set created %s: %v", path, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSetStdinSizeLimit(t *testing.T) {
+	run := setupBare(t)
+	value := strings.Repeat("x", 1<<20)
+	setTestStdin(t, value)
+	if r := run("--yes", "set", "TOKEN"); r.code() != 0 || r.stdout != "" {
+		t.Fatalf("set: exit=%d stdout bytes=%d err=%v", r.code(), len(r.stdout), r.err)
+	}
+	s, key, err := openActiveStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	enc, err := s.Get("default", "TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := internal.Decrypt(key, enc, internal.AD("default", "TOKEN"))
+	if err != nil || string(plain) != value {
+		t.Errorf("stored value: bytes=%d err=%v; want exactly 1 MiB unchanged", len(plain), err)
+	}
+}
+
+func TestSetStdinReadLimit(t *testing.T) {
+	run := setupBare(t)
+	input := setTestStdin(t, strings.Repeat("x", 1<<20+2))
+	if r := run("--yes", "set", "TOKEN"); r.code() != 2 || r.err.Error() != "value on stdin is larger than 1 MiB" {
+		t.Fatalf("set: exit=%d err=%v", r.code(), r.err)
+	}
+	remaining, err := io.ReadAll(input)
+	if err != nil || string(remaining) != "x" {
+		t.Errorf("read past limit: remaining bytes=%d err=%v; want one unread byte", len(remaining), err)
 	}
 }
 

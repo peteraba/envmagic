@@ -21,6 +21,8 @@ import (
 // version is overridden at link time for releases.
 var version = "v0.5.0"
 
+var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
 		os.Exit(1)
@@ -189,7 +191,7 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 			return cli.Exit("usage: envmagic load [-n NS] [NAME]", 2)
 		}
 	case "set":
-		if err := checkSetArgs(cmd.NArg(), isatty.IsTerminal(os.Stdin.Fd())); err != nil {
+		if err := checkSetArgs(cmd.NArg(), stdinIsTerminal()); err != nil {
 			return err
 		}
 	}
@@ -289,16 +291,26 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 }
 
 func runSetFromStdin(cmd *cli.Command, namespace, name string) error {
-	if _, err := findOrCreateStorePath(cmd); err != nil {
-		return err
+	cwd, err := os.Getwd()
+	if err != nil {
+		return errorf("getcwd: %v", err)
 	}
-	data, err := io.ReadAll(os.Stdin)
+	if _, found := findEnvmagic(cwd); !found && !cmd.Root().Bool("yes") {
+		return errorf("no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store")
+	}
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20+1))
 	if err != nil {
 		return errorf("read stdin: %v", err)
+	}
+	if len(data) > 1<<20 {
+		return cli.Exit("value on stdin is larger than 1 MiB", 2)
 	}
 	value := string(data)
 	if strings.HasSuffix(value, "\n") {
 		value = strings.TrimSuffix(strings.TrimSuffix(value, "\n"), "\r")
+	}
+	if value == "" {
+		return cli.Exit("no value on stdin; to store an empty value use: envmagic set NAME ''", 2)
 	}
 	return runSet(cmd, namespace, name, value)
 }
@@ -427,10 +439,6 @@ func findOrCreateStorePath(cmd *cli.Command) (string, error) {
 	if cmd.Root().Bool("yes") {
 		return target, nil
 	}
-	if cmd.Name == "set" && cmd.NArg() == 1 {
-		return "", errorf("no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store")
-	}
-
 	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
 	if err != nil {
 		return "", errorf("read prompt: %v", err)
