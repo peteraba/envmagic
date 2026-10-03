@@ -19,7 +19,9 @@ them into the current shell when you need them.
 
 ## Install
 
-Requires Go 1.26+.
+Download prebuilt archives for Linux, macOS and Windows from the
+[GitHub releases page](https://github.com/peteraba/envmagic/releases),
+or install from source with Go 1.26.3+:
 
 ```sh
 go install github.com/peteraba/envmagic/cmd/envmagic@latest
@@ -32,7 +34,10 @@ make build
 Add the shell integration to your rc file once:
 
 ```sh
-# bash / zsh
+# bash
+eval "$(envmagic shell-init bash)"
+
+# zsh
 eval "$(envmagic shell-init zsh)"
 
 # fish
@@ -42,85 +47,44 @@ envmagic shell-init fish | source
 Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
 statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
 `envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
-Bare `envmagic` shows help.
+Bare `envmagic` shows help. `--debug` echoes only load exports to stderr.
 
 ## Usage
 
+After setup, store and load a value:
+
 ```sh
-# Store a value (creates .envmagic in the current dir on first use)
-envmagic set api_key 'sk-abc123' # or: envmagic api_key 'sk-abc123'
-
-# Print a raw value
-envmagic get api_key # or: envmagic api_key
-
-# Load a single value into the current shell
+envmagic set api_key 'sk-abc123'
 envmagic load api_key
-
-# Load ALL values from the default namespace into the current shell
-envmagic load
-
-# Load ALL values from a specific namespace
-envmagic -n staging load
-
-# Echo the export lines to stderr too (handy for debugging)
-envmagic --debug load
-envmagic --debug load api_key
-
-# Use a namespace for individual get/set/load
-envmagic -n staging set db_url 'postgres://…'
-envmagic -n staging get db_url
-envmagic -n staging load db_url
-
-# List names in a namespace
-envmagic list
-envmagic -n staging list
-
-# Remove an entry
-envmagic rm api_key
-
-# Import / export .env files
-envmagic import .env
-envmagic -n staging export staging.env
-
-# Populate the store from a template (.env.example): fill in each value
-# in an interactive form, with the template's values pre-filled as defaults
-envmagic import -i .env.example
-
-# Or just scaffold the namespace: store every name with an empty value
-envmagic import --empty .env.example
-
-# Non-interactive / CI: create .envmagic without a prompt (set/import only)
-envmagic --yes set api_key 'sk-abc123'
-envmagic import --yes .env
-# or: ENVMAGIC_NONINTERACTIVE=1 envmagic import .env
+printf '%s\n' "$API_KEY"
 ```
+
+Store commands find the nearest `.envmagic` in the current directory or its parents.
+If none exists, `set` and `import` offer to create one in the current directory;
+use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt.
+Use `-n NS` to select a namespace; the default is `default`.
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
 `API_KEY`. If a name matches a subcommand (`get`, `set`, `load`, `list`, `key`, …),
 read it with `envmagic get NAME` and store it with `envmagic set NAME VALUE`
 (e.g. `envmagic set list foo`).
 
-### Importing from a template
-
-Projects often ship a `.env.example` listing the variables they need, with
-defaults where they exist (`DB_PORT=5432`) and blanks where they don't
-(`API_KEY=`). `envmagic import --interactive` (or `-i`) parses such a file and
-walks you through a form with one field per variable; pressing Enter keeps the
-template's value, and fields whose names look secret (containing `KEY`,
-`SECRET`, `TOKEN`, `PASSWORD`, or `PASS`) are masked while you type.
-
-`envmagic import --empty` skips the form and stores an empty value for every
-name — template defaults are ignored — which is handy for scaffolding a
-namespace non-interactively.
-
-In all modes, importing a name that already exists overwrites the stored
-value.
-
 ## Backing up the encryption key
 
-All values are encrypted with a 32-byte key stored at
-`$XDG_CONFIG_HOME/envmagic/key` (typically `~/.config/envmagic/key`).
-**If this file is lost, stored values are unrecoverable.**
+Values are encrypted with AES-256-GCM using a per-user 32-byte key, shared
+across projects and generated on first use with mode `0600`. On Linux, it lives
+at `$XDG_CONFIG_HOME/envmagic/key` (typically `~/.config/envmagic/key`);
+other platforms use their user config directory.
+**If this key is lost or replaced, existing values cannot be decrypted.**
+
+Names and namespaces are stored in plaintext; `list` reveals names, not values,
+but currently opens the key like every read command. Each encrypted value is
+bound to its namespace and name, so moving ciphertext between rows fails to
+decrypt.
+
+The `.envmagic` store is created with mode `0600`. Its values are encrypted,
+so it can be committed, but its names and namespaces remain visible. Keep the
+key out of repositories and shared backups you would not trust with plaintext.
 
 ### Show the key
 
@@ -143,22 +107,6 @@ envmagic key --set '4Tz8…(base64)…=='
 
 `key --set` validates that the decoded value is exactly 32 bytes before
 writing, so a truncated backup is rejected before it overwrites anything.
-
-## How it works
-
-- **Store.** Each project gets a `.envmagic` SQLite file. `set` looks for one
-  in the current directory and offers to create it (use `--yes` or
-  `ENVMAGIC_NONINTERACTIVE=1` to create without a prompt); `get`/`load`/`list`/`rm` walk up
-  the directory tree to find the nearest one (like `.git`).
-- **Encryption.** Values are sealed with AES-256-GCM. Names and namespaces
-  are stored in plaintext (so `list` works without the key); only values are
-  encrypted. Each value is bound to its namespace and name, so moving
-  ciphertext between rows fails to decrypt.
-- **Key.** A 32-byte key is generated on first use at
-  `$XDG_CONFIG_HOME/envmagic/key` (mode `0600`). Run `envmagic key` to see
-  the path and value; use `envmagic key --set <base64>` to restore it.
-- **Namespaces.** Use `-n NS` to keep `dev`/`staging`/`prod` separate within
-  the same `.envmagic` file. The default namespace is `default`.
 
 ### Upgrading from older builds
 
@@ -185,18 +133,6 @@ with `envmagic -n NS rm NAME`, re-import, then set it again.
 
 After all stores and namespaces are re-imported successfully, delete `envmagic-old`.
 
-## Security notes
-
-- The `.envmagic` file is safe to commit — values are encrypted — but the key
-  file is not. Keep the key out of any repo or shared backup that you wouldn't
-  trust with the plaintext.
-- `set` creates `.envmagic` with mode `0600`; `list` reveals variable names
-  but not values.
-- `get`/`NAME` print decrypted values; `load NAME` and `load` emit
-  exports that the shell wrapper evaluates. `--debug` echoes only these exports.
-- If the key is lost or rotated, existing entries can't be decrypted; you'll
-  need to re-`set` them.
-
 ## Commands
 
 | Command                                  | Description                                                      |
@@ -211,9 +147,9 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 | `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                                        |
 | `envmagic [-n NS] rm NAME`               | Remove a stored entry                                            |
 | `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file (stdout if omitted)            |
-| `envmagic [-n NS] import [FILE]`         | Import a `.env` file into a namespace (stdin if omitted)         |
+| `envmagic [-n NS] import [FILE]`         | Import `.env` values, overwriting existing names (stdin if omitted) |
 | `envmagic [-n NS] import -i FILE`        | Fill values in an interactive form (template values as defaults) |
-| `envmagic [-n NS] import --empty [FILE]` | Store an empty value for every name in the file                  |
+| `envmagic [-n NS] import --empty [FILE]` | Store empty values, ignoring template defaults                   |
 | `envmagic key`                           | Show the key file path and base64-encoded content                |
 | `envmagic key --set <base64>`            | Restore the key from a base64 string                             |
 | `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
@@ -260,51 +196,36 @@ func main() {
 ### Read a single variable
 
 ```go
+package main
+
 import (
     "errors"
+    "fmt"
     "log"
+
+    "github.com/peteraba/envmagic"
 )
 
-val, err := c.Get(envmagic.DefaultNamespace, "API_KEY")
-if errors.Is(err, envmagic.ErrNotFound) {
-    log.Fatal("API_KEY is not set")
-}
-if err != nil {
-    log.Fatal(err)
+func main() {
+    c, err := envmagic.OpenWithPath("/path/to/project/.envmagic")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer c.Close()
+
+    val, err := c.Get(envmagic.DefaultNamespace, "API_KEY")
+    if errors.Is(err, envmagic.ErrNotFound) {
+        log.Fatal("API_KEY is not set")
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(val)
 }
 ```
 
-### API reference
-
-```go
-const DefaultNamespace = "default"
-
-// Open opens (or creates) .envmagic in the current working directory.
-func Open() (*Client, error)
-
-// OpenWithPath opens (or creates) the store at storePath, loading the key from
-// $XDG_CONFIG_HOME/envmagic/key (generated on first use).
-func OpenWithPath(storePath string) (*Client, error)
-
-// OpenWithKeyAndPath opens storePath using the key file at keyPath.
-func OpenWithKeyAndPath(keyPath, storePath string) (*Client, error)
-
-// Close closes the underlying store.
-func (c *Client) Close() error
-
-// Load decrypts all variables in namespace, sets them via os.Setenv, and returns the names loaded.
-func (c *Client) Load(namespace string) ([]string, error)
-
-// Get returns the decrypted value for namespace/name.
-// Use errors.Is(err, ErrNotFound) when the entry does not exist.
-func (c *Client) Get(namespace, name string) (string, error)
-
-var ErrNotFound = errors.New("not found")
-```
-
-The store path is typically the `.envmagic` file at the root of the project.
-The key is shared across all projects on the machine and is loaded
-automatically; applications do not need to manage it directly.
+Pass upper-case names to `Get`.
+See [pkg.go.dev](https://pkg.go.dev/github.com/peteraba/envmagic) for the API reference.
 
 ## License
 
