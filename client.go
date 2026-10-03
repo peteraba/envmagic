@@ -1,3 +1,6 @@
+// Package envmagic loads encrypted project environment variables from SQLite stores.
+// Values are encrypted with a per-user key shared across projects.
+// Variable names are stored upper-case.
 package envmagic
 
 import (
@@ -9,14 +12,14 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-// DefaultNamespace is the namespace used when none is specified on the CLI.
+// DefaultNamespace is the conventional default namespace for library callers.
 const DefaultNamespace = "default"
 
 // ErrNotFound is returned by Get when the requested variable does not exist.
 var ErrNotFound = errors.New("not found")
 
 // Client holds an open store and its encryption key.
-// Obtain one via Open.
+// Obtain one via Open, OpenWithPath, or OpenWithKeyAndPath.
 type Client struct {
 	s          *internal.Store
 	key        []byte
@@ -81,6 +84,7 @@ func (c *Client) KeyCreated() bool {
 }
 
 // Get retrieves and decrypts the value for namespace/name.
+// Names are stored upper-case; the caller must pass the upper-case name.
 // Returns ErrNotFound if the entry does not exist; use errors.Is(err, ErrNotFound).
 func (c *Client) Get(namespace, name string) (string, error) {
 	enc, err := c.s.Get(namespace, name)
@@ -101,6 +105,7 @@ func (c *Client) Get(namespace, name string) (string, error) {
 
 // Load decrypts all variables in namespace and sets them as environment
 // variables in the current process via os.Setenv.
+// It returns the names it loaded.
 func (c *Client) Load(namespace string) ([]string, error) {
 	entries, err := c.s.GetAll(namespace)
 	if err != nil {
