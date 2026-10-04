@@ -73,8 +73,56 @@ func TestStoreSetAllRollback(t *testing.T) {
 			if _, err := store.Get("default", "B"); err != ErrEntryNotFound {
 				t.Errorf("Get(B) error = %v, want ErrEntryNotFound", err)
 			}
+			if err := store.Set("default", "C", []byte("c")); err != nil {
+				t.Fatalf("Set(C) after rollback: %v", err)
+			}
 		})
 	}
+}
+
+func TestStoreSetAllErrors(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), ".envmagic")
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec(`CREATE TABLE parent (id TEXT PRIMARY KEY);
+			CREATE TABLE env_vars (
+				namespace TEXT NOT NULL,
+				name TEXT NOT NULL REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED,
+				value BLOB NOT NULL,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (namespace, name)
+			)`)
+		_ = db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if err := store.SetAll("default", []Entry{{Name: "A", Enc: []byte("new")}}); err == nil || !strings.Contains(err.Error(), "failed to commit") {
+			t.Errorf("SetAll error = %v, want failed to commit", err)
+		}
+		if _, err := store.Get("default", "A"); err != ErrEntryNotFound {
+			t.Errorf("Get(A) error = %v, want ErrEntryNotFound", err)
+		}
+	})
+	t.Run("begin", func(t *testing.T) {
+		store, err := OpenStore(filepath.Join(t.TempDir(), ".envmagic"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetAll("default", []Entry{{Name: "A", Enc: []byte("new")}}); err == nil || !strings.Contains(err.Error(), "failed to begin") {
+			t.Errorf("SetAll error = %v, want failed to begin", err)
+		}
+	})
 }
 
 func TestOpenStorePermissions(t *testing.T) {
