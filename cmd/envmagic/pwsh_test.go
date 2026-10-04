@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,12 +19,12 @@ func TestLoadFormat(t *testing.T) {
 			t.Fatal(r.err)
 		}
 	}
-	wantA := "$env:A = 'single ''‘‘’’‚‚‛‛ double \" dollar $ backtick ` slash \\\nárvíz 雪\n'\n"
+	wantA := "$env:A = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('c2luZ2xlICfigJjigJnigJrigJsgZG91YmxlICIgZG9sbGFyICQgYmFja3RpY2sgYCBzbGFzaCBcCsOhcnbDrXog6ZuqCg=='))\n"
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"--format", "pwsh", "load"}, wantA + "$env:B = ''\n"},
+		{[]string{"--format", "pwsh", "load"}, wantA + "$env:B = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''))\n"},
 		{[]string{"--format", "pwsh", "load", "A"}, wantA},
 		{[]string{"--format", "pwsh", "-n", "empty", "load"}, ""},
 		{[]string{"--format", "pwsh", "get", "A"}, value + "\n"},
@@ -48,6 +49,52 @@ func TestLoadFormat(t *testing.T) {
 	for _, format := range []string{"invalid", "", "powershell"} {
 		if r := run("--format", format, "load"); r.code() != 2 || r.stdout != "" || !strings.Contains(r.err.Error(), "expected posix or pwsh") {
 			t.Errorf("invalid format %q: %+v", format, r)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{"hello", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('aGVsbG8='))\n"},
+		{"雪\r\n", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('6ZuqDQo='))\n"},
+		{"x\r", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('eA0='))\n"},
+	} {
+		if r := run("set", "SAMPLE", tc.value); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		if r := run("--format", "pwsh", "load", "SAMPLE"); r.code() != 0 || r.stdout != tc.want || r.stderr != "" {
+			t.Errorf("value=%q: result=%+v, want stdout=%q", tc.value, r, tc.want)
+		}
+	}
+}
+
+func TestLoadFormatInvalidUTF8(t *testing.T) {
+	run := setup(t)
+	value := "a\xffb"
+	for _, args := range [][]string{{"set", "A_GOOD", "safe"}, {"set", "Z_BAD", value}} {
+		if r := run(args...); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+	}
+	for _, args := range [][]string{
+		{"--format", "pwsh", "load"},
+		{"--format", "pwsh", "load", "Z_BAD"},
+		{"--format", "pwsh", "--debug", "load"},
+		{"--format", "pwsh", "--debug", "load", "Z_BAD"},
+	} {
+		r := run(args...)
+		if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err.Error() != "envmagic: value for Z_BAD is not valid UTF-8; it cannot be loaded into PowerShell" {
+			t.Errorf("%v: %+v", args, r)
+		}
+	}
+	for _, args := range [][]string{{"load"}, {"load", "Z_BAD"}} {
+		r := run(args...)
+		want := "export Z_BAD=\"" + value + "\"\n"
+		if len(args) == 1 {
+			want = "export A_GOOD=\"safe\" &&\n" + want
+		}
+		if r.code() != 0 || r.stdout != want || r.stderr != "" {
+			t.Errorf("posix %v: %+v, want=%q", args, r, want)
 		}
 	}
 }
@@ -90,6 +137,11 @@ func TestShellWrapperPwsh(t *testing.T) {
 	multiline := "-----BEGIN KEY-----\n  abc\ndef\n-----END KEY-----\n"
 	for _, args := range [][]string{
 		{"set", "NAME", value},
+		{"set", "EMPTY", ""},
+		{"set", "LOAD", "Write-Output LOAD_DATA"},
+		{"-n", "--help", "set", "X", "help namespace"},
+		{"-n", "X", "set", "X", "$(Set-Item Env:PWNED 1)"},
+		{"-n", "cr", "set", "X", "CR\rCRLF\r\ntrailing\r"},
 		{"-n", "staging", "set", "NAME", "staging value"},
 		{"-n", "staging", "set", "OTHER", "second value"},
 		{"-n", "multiline", "set", "--", "NAME", multiline},
@@ -106,6 +158,11 @@ func TestShellWrapperPwsh(t *testing.T) {
 		want    string
 		wantErr string
 	}{
+		{`$env:EMPTY = ''; $emptyPresent = Test-Path Env:EMPTY; $env:EMPTY = 'before'; envmagic load EMPTY; if ((Test-Path Env:EMPTY) -ne $emptyPresent -or $env:EMPTY) { throw 'empty value differs from native assignment' }`, "", ""},
+		{`envmagic -n cr load; [Console]::Out.Write($env:X)`, "CR\rCRLF\r\ntrailing\r", confirm},
+		{`envmagic -n cr load X; [Console]::Out.Write($env:X)`, "CR\rCRLF\r\ntrailing\r", ""},
+		{`Remove-Item Env:X -ErrorAction SilentlyContinue; envmagic -n --help load; if (Test-Path Env:X) { throw 'namespace help evaluated' }`, "export X=\"help namespace\"\n", ""},
+		{`envmagic LOAD`, "Write-Output LOAD_DATA\n", ""},
 		{`envmagic load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic load NAME; [Console]::Out.Write($env:NAME)`, value, ""},
 		{`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write($env:X)`, quoteInjection, confirm},
@@ -140,6 +197,38 @@ func TestShellWrapperPwsh(t *testing.T) {
 				t.Errorf("err=%v stdout=%q want=%q stderr=%q wantErr=%q", err, out, tc.want, stderr.String(), tc.wantErr)
 			}
 		})
+	}
+
+	for _, flag := range []string{"--format posix", "--format=posix", "-format posix", "-format=posix"} {
+		t.Run("format "+flag, func(t *testing.T) {
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; envmagic -n X load `+flag+`; if ($LASTEXITCODE -ne 0 -or (Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }`)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			want := "export X=\"\\$(Set-Item Env:PWNED 1)\"\n"
+			if err != nil || string(out) != want || stderr.Len() != 0 {
+				t.Errorf("err=%v stdout=%q want=%q stderr=%q", err, out, want, stderr.String())
+			}
+		})
+	}
+
+	for _, marker := range []string{"\u2011", "т", "сf", "\U0001086f", "\u0092"} {
+		if r := run("-n", "security", "set", "X", "a"+marker+"; $env:PWNED=1; #"+marker+"b"); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		for _, codepage := range []string{"1252", "932", "936", "949"} {
+			t.Run("encoding "+codepage+" "+marker, func(t *testing.T) {
+				cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`[Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance); [Console]::OutputEncoding = [Text.Encoding]::GetEncoding(`+codepage+`); Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:X)))`)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				decoded, decodeErr := base64.StdEncoding.DecodeString(string(out))
+				want := "a" + marker + "; $env:PWNED=1; #" + marker + "b"
+				if err != nil || decodeErr != nil || string(decoded) != want || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != confirm {
+					t.Errorf("err=%v decodeErr=%v stdout=%q decoded=%q want=%q stderr=%q", err, decodeErr, out, decoded, want, stderr.String())
+				}
+			})
+		}
 	}
 
 	t.Run("eval guards", func(t *testing.T) {

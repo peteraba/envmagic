@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mattn/go-isatty"
 	"github.com/urfave/cli/v3"
@@ -385,7 +386,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 
 	line := string(plain)
 	if cmd.Name == "load" {
-		if err := checkValue(name, line); err != nil {
+		if err := checkValue(name, line, cmd.String("format")); err != nil {
 			return err
 		}
 		line = loadAssignment(name, line, cmd.String("format"))
@@ -416,7 +417,7 @@ func runSourceAll(namespace string, debug bool, format string) error {
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
-		if err := checkValue(e.Name, string(plain)); err != nil {
+		if err := checkValue(e.Name, string(plain), format); err != nil {
 			return err
 		}
 		ending := "\n"
@@ -433,24 +434,19 @@ func runSourceAll(namespace string, debug bool, format string) error {
 	return nil
 }
 
-var pwshSingleQuoteReplacer = strings.NewReplacer(
-	"'", "''",
-	"‘", "‘‘",
-	"’", "’’",
-	"‚", "‚‚",
-	"‛", "‛‛",
-)
-
 func loadAssignment(name, value, format string) string {
 	if format == "pwsh" {
-		return fmt.Sprintf("$env:%s = '%s'", name, pwshSingleQuoteReplacer.Replace(value))
+		return fmt.Sprintf("$env:%s = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s'))", name, base64.StdEncoding.EncodeToString([]byte(value)))
 	}
 	return fmt.Sprintf("export %s=%s", name, shellQuote(value))
 }
 
-func checkValue(name, value string) error {
+func checkValue(name, value, format string) error {
 	if strings.ContainsRune(value, 0) {
 		return errorf("value for %s contains a NUL byte", name)
+	}
+	if format == "pwsh" && !utf8.ValidString(value) {
+		return errorf("value for %s is not valid UTF-8; it cannot be loaded into PowerShell", name)
 	}
 	return nil
 }

@@ -28,14 +28,14 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 }
 
 // shellInitPosix / shellInitFish eval only load; confirm only load without a name.
-// Namespace values are skipped; help/version flags always bypass eval.
+// Namespace values are skipped; help/version/format flags always bypass eval.
 
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
     local _envmagic_arg _envmagic_command='' _envmagic_positional=0 _envmagic_skip=0
     for _envmagic_arg in "$@"; do
         case "$_envmagic_arg" in
-            -h|--help|-v|--version)
+            -h|--help|-v|--version|--format|--format=*|-format|-format=*)
                 command envmagic "$@"
                 return $?
                 ;;
@@ -81,7 +81,7 @@ function envmagic
     set -l _envmagic_skip 0
     for _envmagic_arg in $argv
         switch "$_envmagic_arg"
-            case -h --help -v --version
+            case -h --help -v --version --format '--format=*' -format '-format=*'
                 command envmagic $argv
                 return $status
         end
@@ -126,9 +126,8 @@ function envmagic {
     $positional = 0
     $skip = $false
     foreach ($arg in $args) {
-        if ($arg -cin '-h', '--help', '-v', '--version') {
+        if ($arg -cin '-h', '--help', '-v', '--version', '--format', '-format' -or $arg -clike '--format=*' -or $arg -clike '-format=*') {
             & $binary @args
-            $global:LASTEXITCODE = $LASTEXITCODE
             return
         }
         if ($skip) {
@@ -144,16 +143,14 @@ function envmagic {
     }
     if ($command -cne 'load') {
         & $binary @args
-        $global:LASTEXITCODE = $LASTEXITCODE
         return
     }
     $out = & $binary --format pwsh @args
     $rc = $LASTEXITCODE
-    $global:LASTEXITCODE = $rc
     if ($rc -ne 0) { return }
     if ($out) {
         try {
-            Invoke-Expression ($out -join "` + "`n" + `") -ErrorAction Stop
+            Invoke-Expression ($out -join "` + "`n" + `")
         } catch {
             Write-Error $_ -ErrorAction Continue
             $global:LASTEXITCODE = 1
