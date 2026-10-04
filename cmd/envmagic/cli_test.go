@@ -1605,6 +1605,8 @@ func TestShellWrapper(t *testing.T) {
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
 				{"-n", "ro", "set", "PWD", "readonly value"},
+				{"-n", "ro-early", "set", "PWD", "readonly value"},
+				{"-n", "ro-early", "set", "ZZZ", "later value"},
 			} {
 				if r := run(args...); r.code() != 0 {
 					t.Fatalf("seed %v: %v", args, r.err)
@@ -1613,6 +1615,8 @@ func TestShellWrapper(t *testing.T) {
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
 			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
+			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"; printf %s "$ZZZ"`
+			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"; printf %s "$ZZZ"`
 			evalError := "readonly variable"
 			if shell == "zsh" {
 				evalError = "read-only variable"
@@ -1621,6 +1625,8 @@ func TestShellWrapper(t *testing.T) {
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
 				evalFailure = `envmagic -n ro load; echo "rc=$status"`
+				earlyEvalFailure = `envmagic -n ro-early load; echo "rc=$status"; printf %s "$ZZZ"`
+				plainEvalFailure = `eval (command envmagic -n ro-early load); echo "rc=$status"; printf %s "$ZZZ"`
 				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
@@ -1637,6 +1643,8 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
 				{`envmagic load -x; echo "rc=` + status + `"`, "rc=1\n", "Incorrect Usage: flag provided but not defined: -x\n"},
 				{evalFailure, "rc=1\n", evalError},
+				{earlyEvalFailure, "rc=1\n", evalError},
+				{plainEvalFailure, "rc=1\n", evalError},
 				{`envmagic load A B; echo "rc=` + status + `"`, "rc=2\n", "usage: envmagic load [-n NS] [NAME]\n"},
 				{`envmagic -n empty load`, "", ""},
 				{`envmagic`, string(help), ""},
@@ -1671,7 +1679,7 @@ func TestShellWrapper(t *testing.T) {
 				if err != nil || string(out) != tc.want {
 					t.Errorf("%s: err=%v stdout=%q want=%q stderr=%q", tc.command, err, out, tc.want, stderr.String())
 				}
-				if tc.command == evalFailure {
+				if tc.command == evalFailure || tc.command == earlyEvalFailure || tc.command == plainEvalFailure {
 					if got := stderr.String(); !strings.Contains(got, tc.wantErr) || strings.Contains(got, confirm) {
 						t.Errorf("%s: stderr=%q, want %q without confirmation", tc.command, got, tc.wantErr)
 					}
@@ -1697,7 +1705,7 @@ func TestSourceAll(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("source-all default: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	for _, want := range []string{`export DB_HOST="localhost"`, `export PORT="5432"`} {
+	for _, want := range []string{"export DB_HOST=\"localhost\" &&\n", "export PORT=\"5432\"\n"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("source-all default: stdout %q does not contain %q", r.stdout, want)
 		}
@@ -1710,7 +1718,7 @@ func TestSourceAll(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("source-all staging: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	for _, want := range []string{`export DB_HOST="staging-host"`, `export API_KEY="stg-secret"`} {
+	for _, want := range []string{"export DB_HOST=\"staging-host\"\n", "export API_KEY=\"stg-secret\" &&\n"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("source-all staging: stdout %q does not contain %q", r.stdout, want)
 		}
@@ -1723,7 +1731,7 @@ func TestSourceAll(t *testing.T) {
 	if r.code() != 0 {
 		t.Fatalf("source-all --debug: exit %d\nstderr: %s", r.code(), r.stderr)
 	}
-	want := "export DB_HOST=\"localhost\"\nexport PORT=\"5432\"\n"
+	want := "export DB_HOST=\"localhost\" &&\nexport PORT=\"5432\"\n"
 	if r.stdout != want || r.stderr != r.stdout {
 		t.Errorf("source-all --debug: stdout=%q stderr=%q, want %q on both", r.stdout, r.stderr, want)
 	}
