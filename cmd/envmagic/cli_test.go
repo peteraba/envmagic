@@ -90,7 +90,7 @@ func setupBare(t *testing.T) func(args ...string) result {
 		// Prevent urfave/cli's error handler from calling os.Exit during tests.
 		app.ExitErrHandler = func(_ context.Context, _ *cli.Command, _ error) {}
 
-		appErr := run(app, append([]string{"envmagic"}, args...))
+		appErr := runApp(app, append([]string{"envmagic"}, args...))
 
 		_ = wOut.Close()
 		_ = wErr.Close()
@@ -1725,6 +1725,7 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
 				{`envmagic get MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{`ENVMAGIC_NONINTERACTIVE=yes envmagic list; echo "rc=` + status + `"`, "rc=1\n", "envmagic: could not parse \"yes\" as bool value from environment variable \"ENVMAGIC_NONINTERACTIVE\" for flag yes: parse error\n"},
 				{`envmagic load -x; echo "rc=` + status + `"`, "rc=1\n", "Incorrect Usage: flag provided but not defined: -x\n"},
 				{evalFailure, "rc=1\n", evalError},
 				{earlyEvalFailure, "rc=1\n", evalError},

@@ -28,13 +28,14 @@ var fileOwner = internal.OwnerUID
 var currentUID = os.Getuid
 
 func main() {
-	if err := run(newApp(), os.Args); err != nil {
+	if err := runApp(newApp(), os.Args); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(app *cli.Command, args []string) error {
+func runApp(app *cli.Command, args []string) error {
 	var diagnostics strings.Builder
+	// ponytail: any ErrWriter output counts as already reported; write app warnings to os.Stderr, since a flag Deprecated warning would hide the error.
 	app.ErrWriter = io.MultiWriter(os.Stderr, &diagnostics)
 	err := app.Run(context.Background(), args)
 	if _, ok := err.(cli.ExitCoder); err != nil && !ok && diagnostics.Len() == 0 {
