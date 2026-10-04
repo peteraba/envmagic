@@ -122,7 +122,10 @@ func TestCommandsWithoutKey(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			run := setup(t)
-			path := isolateKeyPath(t)
+			path, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
 			s, err := internal.OpenStore(".envmagic")
 			if err != nil {
 				t.Fatal(err)
@@ -162,6 +165,59 @@ func TestCommandsWithoutKey(t *testing.T) {
 				t.Errorf("command created a key: %v", err)
 			}
 		})
+	}
+}
+
+func TestKeyLoadErrors(t *testing.T) {
+	for _, kind := range []string{"invalid-length", "directory"} {
+		for _, args := range [][]string{{"get", "TOKEN"}, {"--yes", "set", "TOKEN", "x"}} {
+			t.Run(kind+"/"+strings.Join(args, " "), func(t *testing.T) {
+				if kind == "directory" && runtime.GOOS == "windows" {
+					t.Skip("Unix directory read error")
+				}
+				run := setup(t)
+				path, err := internal.KeyPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				key := []byte("short")
+				want := fmt.Sprintf("envmagic: load key: key file %s has invalid length 5 (expected 32)", path)
+				if kind == "directory" {
+					if err := os.Mkdir(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					_, err := os.ReadFile(path)
+					if err == nil {
+						t.Fatal("expected directory read error")
+					}
+					want = fmt.Sprintf("envmagic: load key: failed to read key file %s: %v", path, err)
+				} else if err := os.WriteFile(path, key, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := run(args...)
+				if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || r.err.Error() != want {
+					t.Errorf("result=%+v; want exit 1 and error %q", r, want)
+				}
+				after, err := os.Stat(path)
+				if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+					t.Fatalf("key path changed: before=%v after=%v err=%v", before, after, err)
+				}
+				if kind == "directory" {
+					if entries, err := os.ReadDir(path); err != nil || len(entries) != 0 {
+						t.Errorf("key directory changed: entries=%v err=%v", entries, err)
+					}
+				} else if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, key) {
+					t.Errorf("key file changed: key=%q err=%v", got, err)
+				}
+			})
+		}
 	}
 }
 
@@ -2502,6 +2558,15 @@ func TestKeyPermissionsWarning(t *testing.T) {
 					if r.code() != 0 || r.stdout != "secret\n" || r.stderr != wantStderr {
 						t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want stderr=%q", r.code(), r.stdout, r.stderr, r.err, wantStderr)
 					}
+					dbPath, err := filepath.Abs(".envmagic")
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantSetStderr := wantStderr + fmt.Sprintf("envmagic: stored TOKEN (namespace %q) in %s\n", "default", dbPath)
+					r = run("--yes", "set", "TOKEN", "secret")
+					if r.code() != 0 || r.stdout != "" || r.stderr != wantSetStderr {
+						t.Fatalf("set: exit=%d stdout=%q stderr=%q err=%v, want stderr=%q", r.code(), r.stdout, r.stderr, r.err, wantSetStderr)
+					}
 				})
 			}
 		})
@@ -2535,7 +2600,7 @@ func TestKeySetRejectsInvalidKey(t *testing.T) {
 }
 
 func TestKeyWriteErrors(t *testing.T) {
-	for _, command := range []string{"create", "set"} {
+	for _, command := range []string{"set-create", "set"} {
 		for _, operation := range []string{"directory", "write"} {
 			t.Run(command+"/"+operation, func(t *testing.T) {
 				run := setupBare(t)
