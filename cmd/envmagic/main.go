@@ -439,7 +439,8 @@ func openActiveStore() (*internal.Store, []byte, error) {
 }
 
 // findOrCreateStorePath returns the path to the nearest .envmagic file,
-// prompting to create one in the current directory if none is found.
+// prompting on a terminal to create one in the current directory if none is found
+// (without a terminal it fails with a --yes hint).
 // With --yes or ENVMAGIC_NONINTERACTIVE=1, creates without prompting.
 func findOrCreateStorePath(cmd *cli.Command) (string, os.FileInfo, error) {
 	cwd, err := os.Getwd()
