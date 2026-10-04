@@ -165,6 +165,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic LOAD`, "Write-Output LOAD_DATA\n", ""},
 		{`envmagic load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic $null load; [Console]::Out.Write($env:NAME)`, value, confirm},
+		{`envmagic @($null) load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic load NAME; [Console]::Out.Write($env:NAME)`, value, ""},
 		{`envmagic load '--' NAME; [Console]::Out.Write($env:NAME)`, value, ""},
 		{`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write($env:X)`, quoteInjection, confirm},
@@ -210,6 +211,8 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic -n X load --format=posix`, "0", ""},
 		{`envmagic -n X load -format posix`, "0", ""},
 		{`envmagic -n X load -format=posix`, "0", ""},
+		{`envmagic -n X load --% --format posix`, "0", ""},
+		{`envmagic -n X load '--%' '--format posix'`, "0", ""},
 		{`envmagic -n X load @('--format','posix')`, "0", ""},
 		{`$f = '--format','posix'; envmagic -n X load $f`, "0", ""},
 		{`envmagic -n X load (,@('--format','posix'))`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
@@ -217,7 +220,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
 	} {
 		t.Run("format "+tc.command, func(t *testing.T) {
-			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+tc.command+`; if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }; [Console]::Out.Write($LASTEXITCODE)`)
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+tc.command+"\n"+`if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }; [Console]::Out.Write($LASTEXITCODE)`)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
@@ -257,11 +260,22 @@ func TestShellWrapperPwsh(t *testing.T) {
 import ("fmt"; "os")
 func main() {
     if os.Getenv("ENVMAGIC_TEST_FAIL") == "1" {
-        fmt.Println("$env:NAME = 'evaluated'")
+        fmt.Println("$env:NAME = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ZXZhbHVhdGVk'))")
         fmt.Fprintln(os.Stderr, "load failed")
         os.Exit(1)
     }
-    fmt.Println("throw 'eval failed'")
+    switch os.Getenv("ENVMAGIC_TEST_OUTPUT") {
+    case "mixed":
+        fmt.Println("$env:NAME = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ZXZhbHVhdGVk'))")
+        fmt.Println("unexpected output")
+    case "posix":
+        fmt.Println("export X=\"$(Set-Item Env:PWNED 1)\"")
+    case "bad base64":
+        fmt.Println("$env:NAME = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ZXZhbHVhdGVk'))")
+        fmt.Println("$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('a'))")
+    default:
+        fmt.Println("throw 'eval failed'")
+    }
 }
 `), 0o600); err != nil {
 			t.Fatal(err)
@@ -271,25 +285,33 @@ func main() {
 		}
 		t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		for _, tc := range []struct {
+			name   string
 			fail   string
 			prefix string
+			output string
 		}{
-			{"1", ""},
-			{"0", ""},
-			{"0", `$ErrorActionPreference='Stop';`},
+			{"binary failure", "1", "", ""},
+			{"invalid", "0", "", ""},
+			{"invalid with stop", "0", `$ErrorActionPreference='Stop';`, ""},
+			{"mixed", "0", "", "mixed"},
+			{"posix", "0", "", "posix"},
+			{"bad base64", "0", "", "bad base64"},
 		} {
-			t.Setenv("ENVMAGIC_TEST_FAIL", tc.fail)
-			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", tc.prefix+shellInitPwsh+`$env:NAME = 'before'; envmagic load; [Console]::Out.Write("$LASTEXITCODE/$env:NAME")`)
-			var stderr bytes.Buffer
-			cmd.Stderr = &stderr
-			out, err := cmd.Output()
-			wantErr := "eval failed"
-			if tc.fail == "1" {
-				wantErr = "load failed"
-			}
-			if err != nil || string(out) != "1/before" || !strings.Contains(stderr.String(), wantErr) || strings.Contains(stderr.String(), confirm) {
-				t.Errorf("fail=%s prefix=%q: err=%v stdout=%q stderr=%q", tc.fail, tc.prefix, err, out, stderr.String())
-			}
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("ENVMAGIC_TEST_FAIL", tc.fail)
+				t.Setenv("ENVMAGIC_TEST_OUTPUT", tc.output)
+				cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", tc.prefix+shellInitPwsh+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; $env:NAME = 'before'; envmagic load; if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'unexpected output applied' }; [Console]::Out.Write("$LASTEXITCODE/$env:NAME")`)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				wantErr := "envmagic: unexpected load output; nothing was set\n"
+				if tc.fail == "1" {
+					wantErr = "load failed\n"
+				}
+				if err != nil || string(out) != "1/before" || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != wantErr {
+					t.Errorf("err=%v stdout=%q stderr=%q wantErr=%q", err, out, stderr.String(), wantErr)
+				}
+			})
 		}
 	})
 }

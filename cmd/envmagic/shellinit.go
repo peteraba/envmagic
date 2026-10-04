@@ -127,7 +127,7 @@ function envmagic {
     $positional = 0
     $skip = $false
     foreach ($arg in $argv) {
-        if ($arg -cin '-h', '--help', '-v', '--version', '--format', '-format' -or $arg -clike '--format=*' -or $arg -clike '-format=*') {
+        if ($arg -cin '-h', '--help', '-v', '--version', '--format', '-format', '--%' -or $arg -clike '--format=*' -or $arg -clike '-format=*') {
             & $binary @argv
             return
         }
@@ -148,13 +148,23 @@ function envmagic {
     }
     $out = & $binary --format pwsh @argv
     if ($LASTEXITCODE -ne 0) { return }
-    if ($out) {
-        try {
-            Invoke-Expression ($out -join "` + "`n" + `")
-        } catch {
-            Write-Error $_ -ErrorAction Continue
-            $global:LASTEXITCODE = 1
-            return
+    $values = @{}
+    try {
+        foreach ($line in $out) {
+            if ($line -ceq '') { continue }
+            if ($line -cnotmatch '^\$env:([A-Z_][A-Z0-9_]*) = \[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\(''([A-Za-z0-9+/]*={0,2})''\)\)$') {
+                throw 'unexpected load output'
+            }
+            $values[$Matches[1]] = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[2]))
+        }
+    } catch {
+        [Console]::Error.WriteLine('envmagic: unexpected load output; nothing was set')
+        $global:LASTEXITCODE = 1
+        return
+    }
+    if ($values.Count -gt 0) {
+        foreach ($name in $values.Keys) {
+            Set-Item -LiteralPath "Env:$name" -Value $values[$name]
         }
         if ($positional -eq 1) {
             [Console]::Error.WriteLine('envmagic: environment variables set')

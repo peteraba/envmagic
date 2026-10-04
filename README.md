@@ -55,6 +55,7 @@ statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load 
 Use `envmagic --format pwsh load [NAME]` to print ASCII-only PowerShell assignments
 that decode base64 values as UTF-8 with `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('…'))`.
 Apply them with `envmagic --format pwsh load | Out-String | Invoke-Expression`.
+The PowerShell wrapper validates all assignments and sets variables without evaluating code.
 PowerShell output rejects values that are not valid UTF-8. Empty values stay set
 in PowerShell 7.6.6 on Linux (checked; Windows not verified); versions that remove
 variables on empty-string assignment will unset them instead. Supplying `--format`
