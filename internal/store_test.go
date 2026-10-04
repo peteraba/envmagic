@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStoreSetAll(t *testing.T) {
@@ -126,6 +127,9 @@ func TestStoreSetAllErrors(t *testing.T) {
 }
 
 func TestOpenStorePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permissions")
+	}
 	permissiveUmask(t)
 	path := filepath.Join(t.TempDir(), ".envmagic")
 	store, err := OpenStore(path)
@@ -133,12 +137,66 @@ func TestOpenStorePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	info, err := os.Stat(path)
+	if err := store.Set("default", "KEY", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(path + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s: mode=%#o, want 0600", path+suffix, got)
+		}
+	}
+}
+
+func TestOpenStoreBusyTimeout(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), ".envmagic"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
-		t.Fatalf("mode=%#o, want 0600", got)
+	t.Cleanup(func() { _ = store.Close() })
+	var timeout int
+	if err := store.db.QueryRow(`PRAGMA busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != 5000 {
+		t.Fatalf("busy_timeout=%d, want 5000", timeout)
+	}
+}
+
+func TestStoreSetWaitsForWriteLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	first, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	tx, err := first.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'FIRST', 'value')`); err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		committed <- tx.Commit()
+	}()
+	setErr := second.Set("default", "SECOND", []byte("value"))
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if setErr != nil {
+		t.Fatalf("Set while another writer held the lock: %v", setErr)
 	}
 }
 
@@ -223,36 +281,47 @@ func TestOpenStoreAllowsUnknownOwner(t *testing.T) {
 
 func TestOpenStoreRejectsForeignOwnerAfterCreate(t *testing.T) {
 	for _, uid := range []int{0, 1000} {
-		t.Run(fmt.Sprintf("uid=%d", uid), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), ".envmagic")
-			originalOwner, originalUID := fileOwner, currentUID
-			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
-			currentUID = func() int { return uid }
-			checks := 0
-			fileOwner = func(info os.FileInfo) (int, bool) {
-				checks++
-				storeInfo, err := os.Stat(path)
-				if err != nil {
-					t.Fatal(err)
+		for _, foreignCheck := range []int{1, 2} {
+			t.Run(fmt.Sprintf("uid=%d/foreignCheck=%d", uid, foreignCheck), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), ".envmagic")
+				originalOwner, originalUID := fileOwner, currentUID
+				t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+				currentUID = func() int { return uid }
+				checks := 0
+				fileOwner = func(info os.FileInfo) (int, bool) {
+					checks++
+					storeInfo, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if checks == foreignCheck && os.SameFile(info, storeInfo) {
+						if foreignCheck == 1 {
+							for _, suffix := range []string{"-wal", "-shm"} {
+								if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+									t.Errorf("SQLite sidecar %s before ownership rejection: stat error=%v, want file not to exist", suffix, err)
+								}
+							}
+						}
+						return 1001, true
+					}
+					return uid, true
 				}
-				if os.SameFile(info, storeInfo) {
-					return 1001, true
+				store, err := OpenStore(path)
+				if store != nil {
+					_ = store.Close()
 				}
-				return uid, true
-			}
-			store, err := OpenStore(path)
-			if store != nil {
-				_ = store.Close()
-				t.Fatal("OpenStore returned a foreign-owned store after creation")
-			}
-			want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid %d); refusing to open", path, uid)
-			if err == nil || err.Error() != want {
-				t.Fatalf("OpenStore: err=%v, want %q", err, want)
-			}
-			if checks != 1 {
-				t.Fatalf("owner checks=%d, want 1", checks)
-			}
-		})
+				if checks != foreignCheck {
+					t.Fatalf("owner checks=%d, want %d", checks, foreignCheck)
+				}
+				if store != nil {
+					t.Fatal("OpenStore returned a foreign-owned store after creation")
+				}
+				want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid %d); refusing to open", path, uid)
+				if err == nil || err.Error() != want {
+					t.Fatalf("OpenStore: err=%v, want %q", err, want)
+				}
+			})
+		}
 	}
 }
 
@@ -385,8 +454,11 @@ func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
 }
 
 func TestOpenStoreSpecialPathsPersist(t *testing.T) {
-	for _, dirName := range []string{"a#b", "pct%41", "sp ace"} {
+	for _, dirName := range []string{"a?b", "a#b", "pct%41", "sp ace"} {
 		t.Run(dirName, func(t *testing.T) {
+			if runtime.GOOS == "windows" && dirName == "a?b" {
+				t.Skip("? is not a valid Windows file name character")
+			}
 			dir := filepath.Join(t.TempDir(), dirName)
 			if err := os.Mkdir(dir, 0o755); err != nil {
 				t.Fatal(err)

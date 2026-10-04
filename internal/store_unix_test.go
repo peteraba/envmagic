@@ -9,6 +9,26 @@ import (
 	"testing"
 )
 
+func TestOpenStoreRejectsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".envmagic")
+	target := filepath.Join(dir, "missing")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if store != nil {
+		_ = store.Close()
+		t.Error("OpenStore returned a store through a dangling symlink")
+	}
+	if err == nil {
+		t.Error("OpenStore returned no error for a dangling symlink")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("symlink target: stat error=%v, want file not to exist", err)
+	}
+}
+
 func TestOpenStoreRejectsRootOwnedFile(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("requires a non-root process")

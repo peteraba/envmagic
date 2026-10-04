@@ -34,20 +34,28 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve database path %s: %w", path, err)
 	}
-	created := false
-	if info, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		created = true
-	} else if err == nil {
-		if uid, known := fileOwner(info); known && uid != currentUID() {
-			return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("failed to create store %s: %w", path, err)
+	}
+	if err == nil {
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close store %s: %w", path, err)
 		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat store %s: %w", path, err)
+	}
+	if uid, known := fileOwner(info); known && uid != currentUID() {
+		return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
 	}
 
 	p := filepath.ToSlash(absPath)
 	if filepath.VolumeName(absPath) != "" && p[0] != '/' {
 		p = "/" + p
 	}
-	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"}).String()
+	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database, path: %s, error: %w", path, err)
@@ -82,7 +90,7 @@ func OpenStore(path string) (*Store, error) {
 	}
 
 	// ponytail: path-based stat allows swaps after open; a full fix needs fstat on SQLite's descriptor.
-	info, err := os.Stat(path)
+	info, err = os.Stat(path)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to stat store %s: %w", path, err)
@@ -90,12 +98,6 @@ func OpenStore(path string) (*Store, error) {
 	if uid, known := fileOwner(info); known && uid != currentUID() {
 		_ = db.Close()
 		return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
-	}
-
-	if created {
-		if err := os.Chmod(path, 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "envmagic: warning: could not chmod %s to 0600: %v\n", path, err)
-		}
 	}
 
 	return &Store{db: db}, nil
