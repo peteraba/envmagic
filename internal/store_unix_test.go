@@ -4,6 +4,7 @@ package internal
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,13 +21,24 @@ func TestOpenStoreRejectsRootOwnedFile(t *testing.T) {
 		if uid, known := OwnerUID(info); !known || uid != 0 {
 			continue
 		}
-		store, err := OpenStore(path)
-		if store != nil {
-			_ = store.Close()
-			t.Fatal("OpenStore returned a root-owned store")
-		}
-		if err == nil || !strings.Contains(err.Error(), "owned by uid 0") {
-			t.Fatalf("OpenStore: err=%v, want root ownership error", err)
+		for _, name := range []string{"direct", "symlink"} {
+			t.Run(name, func(t *testing.T) {
+				storePath := path
+				if name == "symlink" {
+					storePath = filepath.Join(t.TempDir(), "store")
+					if err := os.Symlink(path, storePath); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store, err := OpenStore(storePath)
+				if store != nil {
+					_ = store.Close()
+					t.Fatal("OpenStore returned a root-owned store")
+				}
+				if err == nil || !strings.Contains(err.Error(), "owned by uid 0") {
+					t.Fatalf("OpenStore: err=%v, want root ownership error", err)
+				}
+			})
 		}
 		return
 	}
