@@ -121,7 +121,7 @@ end
 
 const shellInitPwsh = `# envmagic shell integration - load with: envmagic shell-init pwsh | Out-String | Invoke-Expression
 function envmagic {
-    $argv = @($args | ForEach-Object { $_ })
+    $argv = @(foreach ($a in $args) { foreach ($e in $a) { if ($null -ne $e) { "$e" } } })
     $binary = (Get-Command envmagic -CommandType Application | Select-Object -First 1).Source
     $command = ''
     $positional = 0

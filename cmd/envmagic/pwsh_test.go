@@ -164,6 +164,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`Remove-Item Env:X -ErrorAction SilentlyContinue; envmagic -n --help load; if (Test-Path Env:X) { throw 'namespace help evaluated' }`, "export X=\"help namespace\"\n", ""},
 		{`envmagic LOAD`, "Write-Output LOAD_DATA\n", ""},
 		{`envmagic load; [Console]::Out.Write($env:NAME)`, value, confirm},
+		{`envmagic $null load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic load NAME; [Console]::Out.Write($env:NAME)`, value, ""},
 		{`envmagic load '--' NAME; [Console]::Out.Write($env:NAME)`, value, ""},
 		{`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write($env:X)`, quoteInjection, confirm},
@@ -200,22 +201,32 @@ func TestShellWrapperPwsh(t *testing.T) {
 		})
 	}
 
-	for _, command := range []string{
-		`envmagic -n X load --format posix`,
-		`envmagic -n X load --format=posix`,
-		`envmagic -n X load -format posix`,
-		`envmagic -n X load -format=posix`,
-		`envmagic -n X load @('--format','posix')`,
-		`$f = '--format','posix'; envmagic -n X load $f`,
+	for _, tc := range []struct {
+		command string
+		code    string
+		wantErr string
+	}{
+		{`envmagic -n X load --format posix`, "0", ""},
+		{`envmagic -n X load --format=posix`, "0", ""},
+		{`envmagic -n X load -format posix`, "0", ""},
+		{`envmagic -n X load -format=posix`, "0", ""},
+		{`envmagic -n X load @('--format','posix')`, "0", ""},
+		{`$f = '--format','posix'; envmagic -n X load $f`, "0", ""},
+		{`envmagic -n X load (,@('--format','posix'))`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
+		{`envmagic -n X @('load',@('--format','posix'))`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
+		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
 	} {
-		t.Run("format "+command, func(t *testing.T) {
-			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+command+`; if ($LASTEXITCODE -ne 0 -or (Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }`)
+		t.Run("format "+tc.command, func(t *testing.T) {
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+tc.command+`; if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }; [Console]::Out.Write($LASTEXITCODE)`)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
-			want := "export X=\"\\$(Set-Item Env:PWNED 1)\"\n"
-			if err != nil || string(out) != want || stderr.Len() != 0 {
-				t.Errorf("err=%v stdout=%q want=%q stderr=%q", err, out, want, stderr.String())
+			want := tc.code
+			if tc.code == "0" {
+				want = "export X=\"\\$(Set-Item Env:PWNED 1)\"\n" + want
+			}
+			if err != nil || string(out) != want || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != tc.wantErr {
+				t.Errorf("err=%v stdout=%q want=%q stderr=%q wantErr=%q", err, out, want, stderr.String(), tc.wantErr)
 			}
 		})
 	}
