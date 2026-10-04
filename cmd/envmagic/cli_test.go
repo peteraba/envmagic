@@ -1615,8 +1615,8 @@ func TestShellWrapper(t *testing.T) {
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
 			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
-			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"`
-			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"`
+			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"; printf %s "$ZZZ"`
+			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"; printf %s "$ZZZ"`
 			evalError := "readonly variable"
 			if shell == "zsh" {
 				evalError = "read-only variable"
@@ -1625,8 +1625,8 @@ func TestShellWrapper(t *testing.T) {
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
 				evalFailure = `envmagic -n ro load; echo "rc=$status"`
-				earlyEvalFailure = `envmagic -n ro-early load; echo "rc=$status"`
-				plainEvalFailure = `eval (command envmagic -n ro-early load); echo "rc=$status"`
+				earlyEvalFailure = `envmagic -n ro-early load; echo "rc=$status"; printf %s "$ZZZ"`
+				plainEvalFailure = `eval (command envmagic -n ro-early load); echo "rc=$status"; printf %s "$ZZZ"`
 				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
