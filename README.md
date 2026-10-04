@@ -60,6 +60,8 @@ printf '%s\n' "$API_KEY"
 ```
 
 Store commands find the nearest `.envmagic` in the current directory or its parents.
+`set` and `import` print `envmagic: using PATH` to stderr when using a parent store;
+`--here` uses or creates `.envmagic` in the current directory instead.
 On Unix (including root), stores owned by another user are skipped with a warning; symlinks to stores you own work, and Windows has no ownership check.
 The library refuses to open stores owned by another user on Unix.
 If none exists, `set` and `import` offer to create one in the current directory;
