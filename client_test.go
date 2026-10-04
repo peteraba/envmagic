@@ -202,6 +202,62 @@ func TestClient_Load(t *testing.T) {
 	}
 }
 
+func TestClient_Load_ErrorSetsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		value   string
+		corrupt bool
+		wantErr string
+	}{
+		{"decrypt", "second value", true, "decrypt Z_ENVMAGIC_LOAD_TEST:"},
+		{"NUL", "second\x00value", false, "value for Z_ENVMAGIC_LOAD_TEST contains a NUL byte"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateKeyPath(t)
+			storePath := filepath.Join(t.TempDir(), ".envmagic")
+			client, err := envmagic.OpenWithPath(storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close() })
+			key, _, err := internal.LoadOrCreateKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := internal.OpenStore(storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			for name, value := range map[string]string{
+				"A_ENVMAGIC_LOAD_TEST": "first value",
+				"Z_ENVMAGIC_LOAD_TEST": tc.value,
+			} {
+				t.Setenv(name, "old")
+				enc, err := internal.Encrypt(key, []byte(value), internal.AD("dev", name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.corrupt && name == "Z_ENVMAGIC_LOAD_TEST" {
+					enc = []byte("corrupt")
+				}
+				if err := store.Set("dev", name, enc); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := client.Load("dev")
+			if err == nil || loaded != nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Load: loaded=%v err=%v, want nil and %q", loaded, err, tc.wantErr)
+			}
+			for _, name := range []string{"A_ENVMAGIC_LOAD_TEST", "Z_ENVMAGIC_LOAD_TEST"} {
+				if got := os.Getenv(name); got != "old" {
+					t.Errorf("Load changed %s to %q, want old", name, got)
+				}
+			}
+		})
+	}
+}
+
 func TestClient_CiphertextBinding(t *testing.T) {
 	for _, tc := range []struct {
 		label     string
