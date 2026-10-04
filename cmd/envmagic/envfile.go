@@ -158,6 +158,7 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (s
 	}
 	defer func() { _ = s.Close() }()
 
+	entries := make([]internal.Entry, 0, len(kvs))
 	for _, kv := range kvs {
 		label := ""
 		if includeName {
@@ -167,9 +168,10 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (s
 		if err != nil {
 			return "", errorf("encrypt%s: %v", label, err)
 		}
-		if err := s.Set(ns, kv[0], enc); err != nil {
-			return "", errorf("write%s: %v", label, err)
-		}
+		entries = append(entries, internal.Entry{Name: kv[0], Enc: enc})
+	}
+	if err := s.SetAll(ns, entries); err != nil {
+		return "", errorf("write: %v", err)
 	}
 
 	return dbPath, nil

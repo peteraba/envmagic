@@ -995,7 +995,7 @@ func TestStoreWriteErrors(t *testing.T) {
 	}{
 		{[]string{"set", "API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
 		{[]string{"API_KEY", "updated"}, "envmagic: write: failed to set entry,"},
-		{[]string{"import", envFile}, "envmagic: write API_KEY: failed to set entry,"},
+		{[]string{"import", envFile}, "envmagic: write: failed to set entry,"},
 	} {
 		t.Run(tc.args[0], func(t *testing.T) {
 			r := run(tc.args...)
@@ -1351,6 +1351,39 @@ func TestListAndRemove(t *testing.T) {
 	r = run("rm", "nonexistent")
 	if r.code() == 0 {
 		t.Error("rm nonexistent: expected non-zero exit")
+	}
+}
+
+func TestImportRollback(t *testing.T) {
+	run := setupBare(t)
+	db, err := sql.Open("sqlite", ".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE env_vars (
+		namespace TEXT NOT NULL,
+		name TEXT NOT NULL CHECK (name <> 'B'),
+		value BLOB NOT NULL,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (namespace, name)
+	)`)
+	_ = db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := run("set", "A", "old"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	setTestStdin(t, "A=new\nB=x\n")
+	r := run("import")
+	if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || !strings.Contains(r.err.Error(), "write:") || !strings.Contains(r.err.Error(), "name: B") {
+		t.Fatalf("import: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
+	}
+	if r := run("get", "A"); r.code() != 0 || r.stdout != "old\n" {
+		t.Errorf("get A after failed import: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
+	}
+	if r := run("get", "B"); r.code() != 1 || r.stdout != "" {
+		t.Errorf("get B after failed import: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 	}
 }
 
