@@ -70,10 +70,11 @@ func newApp() *cli.Command {
 				},
 			},
 			&cli.StringFlag{
-				Name:    "namespace",
-				Aliases: []string{"n"},
-				Value:   envmagic.DefaultNamespace,
-				Usage:   "a namespace",
+				Name:     "namespace",
+				Aliases:  []string{"n"},
+				Value:    envmagic.DefaultNamespace,
+				Usage:    "a namespace",
+				OnlyOnce: true,
 				Action: func(_ context.Context, _ *cli.Command, namespace string) error {
 					if namespace == "load" {
 						return cli.Exit(`envmagic: namespace "load" is reserved`, 2)

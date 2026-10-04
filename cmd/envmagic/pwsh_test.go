@@ -154,6 +154,9 @@ func TestShellWrapperPwsh(t *testing.T) {
 	}
 	init := "envmagic shell-init pwsh | Out-String | Invoke-Expression\n"
 	seedReservedNamespaceY(t, run, loadAssignment("PWNED", "EXECUTED", "pwsh"))
+	if r := run("-n", "x", "set", "Y", loadAssignment("PWNED", "EXECUTED", "pwsh")); r.code() != 0 {
+		t.Fatal(r.err)
+	}
 	for _, flag := range []string{"--n", "-namespace"} {
 		t.Run("reserved "+flag, func(t *testing.T) {
 			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic `+flag+` load get Y; $code = $LASTEXITCODE; if (Test-Path Env:PWNED) { throw 'stored value applied' }; exit $code`)
@@ -162,6 +165,18 @@ func TestShellWrapperPwsh(t *testing.T) {
 			out, err := cmd.Output()
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: namespace \"load\" is reserved\n" {
+				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+			}
+		})
+	}
+	for _, args := range []string{"--n load -n x get Y", "-namespace load --namespace=x get Y"} {
+		t.Run("repeated "+args, func(t *testing.T) {
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic `+args+`; $code = $LASTEXITCODE; if (Test-Path Env:PWNED) { throw 'stored value applied' }; exit $code`)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(out) != 0 || !strings.Contains(stderr.String(), "can't duplicate this flag") {
 				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 			}
 		})

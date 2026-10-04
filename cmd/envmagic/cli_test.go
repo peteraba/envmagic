@@ -1840,31 +1840,91 @@ func seedReservedNamespaceY(t *testing.T, run func(...string) result, value stri
 
 func TestReservedNamespace(t *testing.T) {
 	binary := buildShellBinary(t)
+	const reservedMessage = "envmagic: namespace \"load\" is reserved\n"
+	check := func(t *testing.T, args []string, code int, message string) {
+		t.Helper()
+		cmd := exec.Command(binary, args...)
+		cmd.Stdin = strings.NewReader("Y=changed\n")
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		var exit *exec.ExitError
+		messageMatches := stderr.String() == message
+		if code == 1 {
+			messageMatches = strings.HasPrefix(stderr.String(), "Incorrect Usage: ") && strings.Contains(stderr.String(), message)
+		}
+		if !errors.As(err, &exit) || exit.ExitCode() != code || len(out) != 0 || !messageMatches {
+			t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+		}
+	}
+	var reservedArgs [][]string
+	for _, flag := range [][]string{{"-n", "load"}, {"--n", "load"}, {"-namespace", "load"}, {"--namespace=load"}, {"-n=load"}} {
+		for _, command := range [][]string{{"set", "Y", "changed"}, {"get", "Y"}, {"load"}, {"list"}, {"rm", "Y"}, {"export"}, {"import"}} {
+			reservedArgs = append(reservedArgs, append(append([]string{}, flag...), command...))
+		}
+	}
+	reservedArgs = append(reservedArgs, []string{"get", "Y", "--n", "load"})
 	run := setup(t)
 	seedReservedNamespaceY(t, run, "original")
+	if r := run("-n", "x", "set", "Y", "original"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
 	before, err := os.ReadFile(".envmagic")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, flag := range [][]string{{"-n", "load"}, {"--n", "load"}, {"-namespace", "load"}, {"--namespace=load"}, {"-n=load"}} {
-		for _, command := range [][]string{{"set", "Y", "changed"}, {"get", "Y"}, {"load"}, {"list"}, {"rm", "Y"}, {"export"}, {"import"}} {
-			args := append(append([]string{}, flag...), command...)
+	for _, tc := range []struct {
+		args    [][]string
+		code    int
+		message string
+	}{
+		{reservedArgs, 2, reservedMessage},
+		{[][]string{
+			{"--n", "load", "-n", "x", "get", "Y"},
+			{"-namespace", "load", "--namespace=x", "get", "Y"},
+			{"--n", "load", "get", "Y", "-n", "x"},
+			{"-n", "a", "-n", "b", "list"},
+		}, 1, "can't duplicate this flag"},
+	} {
+		for _, args := range tc.args {
 			t.Run(strings.Join(args, " "), func(t *testing.T) {
-				cmd := exec.Command(binary, args...)
-				cmd.Stdin = strings.NewReader("Y=changed\n")
-				var stderr bytes.Buffer
-				cmd.Stderr = &stderr
-				out, err := cmd.Output()
-				var exit *exec.ExitError
-				if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: namespace \"load\" is reserved\n" {
-					t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
-				}
+				check(t, args, tc.code, tc.message)
 				after, err := os.ReadFile(".envmagic")
 				if err != nil || !bytes.Equal(before, after) {
 					t.Fatalf("store changed: %v", err)
 				}
 			})
 		}
+	}
+	for _, state := range []string{"missing", "invalid"} {
+		t.Run(state+" store", func(t *testing.T) {
+			setupBare(t)
+			invalid := []byte("not a SQLite database\n")
+			if state == "invalid" {
+				if err := os.WriteFile(".envmagic", invalid, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, args := range reservedArgs {
+				t.Run(strings.Join(args, " "), func(t *testing.T) {
+					check(t, args, 2, reservedMessage)
+					entries, err := os.ReadDir(".")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if state == "missing" {
+						if len(entries) != 0 {
+							t.Fatalf("files created: %v", entries)
+						}
+					} else {
+						after, err := os.ReadFile(".envmagic")
+						if err != nil || !bytes.Equal(invalid, after) || len(entries) != 1 {
+							t.Fatalf("store or files changed: entries=%v err=%v", entries, err)
+						}
+					}
+				})
+			}
+		})
 	}
 	for _, namespace := range []string{"Load", "loads"} {
 		if r := run("-n", namespace, "set", "Y", "allowed"); r.code() != 0 {
@@ -2072,6 +2132,9 @@ func TestShellWrapper(t *testing.T) {
 				"AppData=" + os.Getenv("AppData"),
 			}
 			seedReservedNamespaceY(t, run, "echo EXECUTED")
+			if r := run("-n", "x", "set", "Y", "echo EXECUTED"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
 			for _, flag := range []string{"--n", "-namespace"} {
 				t.Run("reserved "+flag, func(t *testing.T) {
 					cmd := exec.Command(path, "-c", init+"envmagic "+flag+" load get Y")
@@ -2081,6 +2144,19 @@ func TestShellWrapper(t *testing.T) {
 					out, err := cmd.Output()
 					var exit *exec.ExitError
 					if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: namespace \"load\" is reserved\n" {
+						t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+					}
+				})
+			}
+			for _, args := range []string{"--n load -n x get Y", "-namespace load --namespace=x get Y"} {
+				t.Run("repeated "+args, func(t *testing.T) {
+					cmd := exec.Command(path, "-c", init+"envmagic "+args)
+					cmd.Env = shellEnv
+					var stderr bytes.Buffer
+					cmd.Stderr = &stderr
+					out, err := cmd.Output()
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(out) != 0 || !strings.Contains(stderr.String(), "can't duplicate this flag") {
 						t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 					}
 				})
