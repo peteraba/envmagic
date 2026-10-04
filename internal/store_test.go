@@ -27,6 +27,175 @@ func TestOpenStorePermissions(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
+	for _, uid := range []int{0, 1000} {
+		t.Run(fmt.Sprintf("uid=%d", uid), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".envmagic")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.Exec("CREATE TABLE untouched (value TEXT)"); err != nil {
+				_ = db.Close()
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return uid }
+			fileOwner = func(os.FileInfo) (int, bool) { return 1001, true }
+			store, err := OpenStore(path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("OpenStore returned a foreign-owned store")
+			}
+			want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid %d); refusing to open", path, uid)
+			if err == nil || err.Error() != want {
+				t.Fatalf("OpenStore: err=%v, want %q", err, want)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("foreign-owned store changed")
+			}
+			for _, suffix := range []string{"-wal", "-shm"} {
+				if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+					t.Errorf("SQLite sidecar %s: stat error=%v, want file not to exist", suffix, err)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenStoreAllowsUnknownOwner(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".envmagic")
+			if existing {
+				store, err := OpenStore(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return 1000 }
+			fileOwner = func(os.FileInfo) (int, bool) { return 1001, false }
+			store, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if store == nil {
+				t.Fatal("OpenStore returned no store for an unknown owner")
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestOpenStoreRejectsForeignOwnerAfterCreate(t *testing.T) {
+	for _, uid := range []int{0, 1000} {
+		t.Run(fmt.Sprintf("uid=%d", uid), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".envmagic")
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return uid }
+			checks := 0
+			fileOwner = func(info os.FileInfo) (int, bool) {
+				checks++
+				storeInfo, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if os.SameFile(info, storeInfo) {
+					return 1001, true
+				}
+				return uid, true
+			}
+			store, err := OpenStore(path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("OpenStore returned a foreign-owned store after creation")
+			}
+			want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid %d); refusing to open", path, uid)
+			if err == nil || err.Error() != want {
+				t.Fatalf("OpenStore: err=%v, want %q", err, want)
+			}
+			if checks != 1 {
+				t.Fatalf("owner checks=%d, want 1", checks)
+			}
+		})
+	}
+}
+
+func TestOpenStoreRejectsForeignOwnerAfterOpen(t *testing.T) {
+	for _, name := range []string{"direct", "symlink"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ".envmagic")
+			target := path
+			if name == "symlink" {
+				target = filepath.Join(dir, "target")
+			}
+			store, err := OpenStore(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if name == "symlink" {
+				if err := os.Symlink(target, path); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return 1000 }
+			checks := 0
+			fileOwner = func(info os.FileInfo) (int, bool) {
+				checks++
+				storeInfo, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if checks == 2 && os.SameFile(info, storeInfo) {
+					return 1001, true
+				}
+				return 1000, true
+			}
+			store, err = OpenStore(path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("OpenStore returned a foreign-owned store after opening")
+			}
+			want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid 1000); refusing to open", path)
+			if err == nil || err.Error() != want {
+				t.Fatalf("OpenStore: err=%v, want %q", err, want)
+			}
+			if checks != 2 {
+				t.Fatalf("owner checks=%d, want 2", checks)
+			}
+		})
+	}
+}
+
 func TestOpenStoreRejectsDSNPragmaInjection(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "a?_pragma=writable_schema(1)&b=")

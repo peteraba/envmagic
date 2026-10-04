@@ -23,7 +23,7 @@ var version = "v0.5.0"
 
 var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
-var fileOwner = ownerUID
+var fileOwner = internal.OwnerUID
 
 var currentUID = os.Getuid
 

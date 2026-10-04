@@ -1,13 +1,14 @@
 //go:build unix
 
-package main
+package internal
 
 import (
 	"os"
 	"syscall"
 )
 
-func ownerUID(info os.FileInfo) (int, bool) {
+// OwnerUID returns the uid that owns info, and false where the platform has none.
+func OwnerUID(info os.FileInfo) (int, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0, false

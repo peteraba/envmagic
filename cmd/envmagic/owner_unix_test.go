@@ -181,8 +181,8 @@ func TestOwnerUID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uid, known := ownerUID(info); !known || uid != os.Getuid() {
-		t.Errorf("ownerUID=(%d, %t), want (%d, true)", uid, known, os.Getuid())
+	if uid, known := internal.OwnerUID(info); !known || uid != os.Getuid() {
+		t.Errorf("OwnerUID=(%d, %t), want (%d, true)", uid, known, os.Getuid())
 	}
 }
 
@@ -194,8 +194,8 @@ func TestOwnerUIDRootDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uid, known := ownerUID(info); !known || uid != 0 {
-		t.Fatalf("ownerUID(/)=(%d, %t), want (0, true)", uid, known)
+	if uid, known := internal.OwnerUID(info); !known || uid != 0 {
+		t.Fatalf("OwnerUID(/)=(%d, %t), want (0, true)", uid, known)
 	}
 }
 
@@ -209,7 +209,7 @@ func TestRealRootOwnedSymlinkUsesParentStore(t *testing.T) {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		if uid, known := ownerUID(info); known && uid == 0 {
+		if uid, known := internal.OwnerUID(info); known && uid == 0 {
 			target = path
 			break
 		}

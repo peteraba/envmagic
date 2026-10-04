@@ -16,6 +16,10 @@ import (
 // namespace and name.
 var ErrEntryNotFound = errors.New("envmagic: entry not found")
 
+var fileOwner = OwnerUID
+
+var currentUID = os.Getuid
+
 // Store is a SQLite-backed encrypted variable store.
 type Store struct {
 	db *sql.DB
@@ -31,8 +35,12 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("failed to resolve database path %s: %w", path, err)
 	}
 	created := false
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if info, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		created = true
+	} else if err == nil {
+		if uid, known := fileOwner(info); known && uid != currentUID() {
+			return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
+		}
 	}
 
 	p := filepath.ToSlash(absPath)
@@ -71,6 +79,17 @@ func OpenStore(path string) (*Store, error) {
 	if objects != 0 {
 		_ = db.Close()
 		return nil, fmt.Errorf("store %s contains triggers, views or other schema objects; refusing to open", path)
+	}
+
+	// ponytail: path-based stat allows swaps after open; a full fix needs fstat on SQLite's descriptor.
+	info, err := os.Stat(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to stat store %s: %w", path, err)
+	}
+	if uid, known := fileOwner(info); known && uid != currentUID() {
+		_ = db.Close()
+		return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
 	}
 
 	if created {
