@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -22,7 +23,7 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 	ns := cmd.String("namespace")
 	outPath := cmd.Args().First()
 
-	s, key, err := openActiveStore()
+	s, key, storePath, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -45,22 +46,64 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(&output, "%s=%s\n", e.Name, dotenvQuote(string(plain)))
 	}
 
-	var w io.Writer = os.Stdout
 	if outPath != "" {
-		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
-			return errorf("open %s: %v", outPath, err)
+		target, err := os.Stat(outPath)
+		if err != nil && !os.IsNotExist(err) {
+			return errorf("stat %s: %v", outPath, err)
 		}
-		defer func() { _ = f.Close() }()
-		w = f
+		if err == nil {
+			keyPath, err := internal.KeyPath()
+			if err != nil {
+				return errorf("key path: %v", err)
+			}
+			for _, protected := range []struct{ path, label string }{
+				{storePath, "store"},
+				{keyPath, "key file"},
+			} {
+				info, err := os.Stat(protected.path)
+				if err != nil {
+					return errorf("stat %s: %v", protected.path, err)
+				}
+				if os.SameFile(target, info) {
+					return errorf("refusing to export over the %s %s", protected.label, outPath)
+				}
+			}
+		}
+		if err := writeExportFile(outPath, output.String()); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprint(os.Stdout, output.String()); err != nil {
+		return errorf("write stdout: %v", err)
 	}
-
-	_, _ = fmt.Fprint(w, output.String())
 
 	if outPath != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "envmagic: exported %d variable(s) from namespace %q to %s\n", len(entries), ns, outPath)
 	}
 
+	return nil
+}
+
+func writeExportFile(path, output string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return errorf("open %s: %v", path, err)
+	}
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}()
+	if _, err := f.WriteString(output); err != nil {
+		return errorf("write %s: %v", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return errorf("sync %s: %v", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return errorf("close %s: %v", path, err)
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return errorf("rename %s: %v", path, err)
+	}
 	return nil
 }
 
