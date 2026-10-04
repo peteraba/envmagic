@@ -1600,10 +1600,13 @@ func TestShellWrapper(t *testing.T) {
 			run := setup(t)
 			home := os.Getenv("HOME")
 			value := `raw "quotes" $cash`
+			multiline := "-----BEGIN KEY-----\n  abc\ndef\n-----END KEY-----\n"
 			for _, args := range [][]string{
 				{"set", "name", value},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
+				{"-n", "multiline", "set", "--", "name", multiline},
+				{"-n", "multiline", "set", "other", "second value"},
 				{"-n", "ro", "set", "PWD", "readonly value"},
 				{"-n", "ro-early", "set", "PWD", "readonly value"},
 				{"-n", "ro-early", "set", "ZZZ", "later value"},
@@ -1614,6 +1617,7 @@ func TestShellWrapper(t *testing.T) {
 			}
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
+			checkExport := ""
 			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
 			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"; printf %s "$ZZZ"`
 			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"; printf %s "$ZZZ"`
@@ -1624,6 +1628,7 @@ func TestShellWrapper(t *testing.T) {
 			if shell == "fish" {
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
+				checkExport = `; set -q -g export; and echo stray; true`
 				evalFailure = `envmagic -n ro load; echo "rc=$status"`
 				earlyEvalFailure = `envmagic -n ro-early load; echo "rc=$status"; printf %s "$ZZZ"`
 				plainEvalFailure = `eval (command envmagic -n ro-early load); echo "rc=$status"; printf %s "$ZZZ"`
@@ -1647,11 +1652,14 @@ func TestShellWrapper(t *testing.T) {
 				{plainEvalFailure, "rc=1\n", evalError},
 				{`envmagic load A B; echo "rc=` + status + `"`, "rc=2\n", "usage: envmagic load [-n NS] [NAME]\n"},
 				{`envmagic -n empty load`, "", ""},
+				{`envmagic -n empty load; echo "rc=` + status + `"`, "rc=0\n", ""},
 				{`envmagic`, string(help), ""},
 				{`envmagic -n staging`, string(help), ""},
 				{`envmagic >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic -n staging >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic load NAME; printf %s "$NAME"`, value, ""},
+				{`envmagic -n multiline load NAME; printf %s "$NAME"` + checkExport, multiline, ""},
+				{`envmagic -n multiline load; printf %s "$NAME"; printf %s "$OTHER"` + checkExport, multiline + "second value", confirm},
 				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", ""},
 				{`envmagic load NAME -n staging; printf %s "$NAME"`, "staging value", ""},
 				{`envmagic load; printf %s "$NAME"`, value, confirm},
