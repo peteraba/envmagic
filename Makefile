@@ -9,18 +9,18 @@ install:
 	go install ./cmd/envmagic
 
 install-tools:
-	go install mvdan.cc/gofumpt@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install mvdan.cc/gofumpt@v0.11.0
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 	go install golang.org/x/vuln/cmd/govulncheck@latest
 	go install github.com/goreleaser/goreleaser/v2@latest
 
 lint:
-	@out=$$(gofumpt -l .) || exit $$?; if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
+	@out=$$(gofumpt -l $$(git ls-files '*.go')) || exit $$?; if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 	golangci-lint run ./...
 	govulncheck ./...
 
 fmt:
-	gofumpt -w .
+	gofumpt -w $$(git ls-files '*.go')
 
 test: lint
 	go test ./...
