@@ -189,9 +189,9 @@ func cmdKey(_ context.Context, cmd *cli.Command) error {
 		return errorf("key path: %v", err)
 	}
 
-	key, err := loadKey()
+	key, err := loadKey(false)
 	if err != nil {
-		return errorf("load key: %v", err)
+		return err
 	}
 
 	fmt.Printf("path:    %s\n", path)
@@ -259,7 +259,7 @@ func cmdList(_ context.Context, cmd *cli.Command) error {
 		return cli.Exit(fmt.Sprintf("envmagic list: unexpected arguments: %v", cmd.Args().Slice()), 2)
 	}
 
-	s, _, _, err := openActiveStore()
+	s, _, _, err := openActiveStore(false)
 	if err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 		return errorf("invalid env var name %q", rawName)
 	}
 
-	s, _, _, err := openActiveStore()
+	s, _, _, err := openActiveStore(false)
 	if err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func runSet(cmd *cli.Command, namespace, name, value string) error {
 }
 
 func runGet(cmd *cli.Command, namespace, name string) error {
-	s, key, _, err := openActiveStore()
+	s, key, _, err := openActiveStore(true)
 	if err != nil {
 		return err
 	}
@@ -388,7 +388,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 }
 
 func runSourceAll(namespace string, debug bool) error {
-	s, key, _, err := openActiveStore()
+	s, key, _, err := openActiveStore(true)
 	if err != nil {
 		return err
 	}
@@ -429,7 +429,7 @@ func checkValue(name, value string) error {
 	return nil
 }
 
-func openActiveStore() (*internal.Store, []byte, string, error) {
+func openActiveStore(decrypt bool) (*internal.Store, []byte, string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, nil, "", errorf("getcwd: %v", err)
@@ -439,9 +439,12 @@ func openActiveStore() (*internal.Store, []byte, string, error) {
 		return nil, nil, "", errorf("no .envmagic file found in %s or any parent", cwd)
 	}
 
-	key, err := loadKey()
-	if err != nil {
-		return nil, nil, "", errorf("load key: %v", err)
+	var key []byte
+	if decrypt {
+		key, err = loadKey(false)
+		if err != nil {
+			return nil, nil, "", err
+		}
 	}
 
 	s, err := openCheckedStore(dbPath, checked)
@@ -569,17 +572,26 @@ func promptYesNo(prompt string) (bool, error) {
 	return false, errorf("prompt failed after 3 attempts")
 }
 
-// loadKey loads or creates the user's encryption key; when a new key file is
-// created, backup instructions are printed to stderr. It also warns on stderr
+// loadKey loads the user's encryption key, optionally creating it. New keys
+// get backup instructions on stderr. It also warns on stderr
 // when the key file permissions allow access by other users.
-func loadKey() ([]byte, error) {
+func loadKey(create bool) ([]byte, error) {
 	path, err := internal.KeyPath()
 	if err != nil {
-		return nil, err
+		return nil, errorf("load key: %v", err)
 	}
-	key, created, err := internal.LoadOrCreateKey()
+	var key []byte
+	var created bool
+	if create {
+		key, created, err = internal.LoadOrCreateKey()
+	} else {
+		key, err = internal.LoadKey(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errorf("no key at %s; restore it with envmagic key --set, or run envmagic set to create one", path)
+		}
+	}
 	if err != nil {
-		return nil, err
+		return nil, errorf("load key: %v", err)
 	}
 	if created {
 		notifyNewEncryptionKey(key, path)

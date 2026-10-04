@@ -22,7 +22,7 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 	ns := cmd.String("namespace")
 	outPath := cmd.Args().First()
 
-	s, key, storePath, err := openActiveStore()
+	s, key, storePath, err := openActiveStore(true)
 	if err != nil {
 		return err
 	}
@@ -194,9 +194,9 @@ func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (s
 		return "", err
 	}
 
-	key, err := loadKey()
+	key, err := loadKey(true)
 	if err != nil {
-		return "", errorf("load key: %v", err)
+		return "", err
 	}
 
 	s, err := openCheckedStore(dbPath, checked)

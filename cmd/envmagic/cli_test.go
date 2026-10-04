@@ -110,6 +110,61 @@ func setupBare(t *testing.T) func(args ...string) result {
 	}
 }
 
+func TestCommandsWithoutKey(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "TOKEN"},
+		{"load", "TOKEN"},
+		{"load"},
+		{"list"},
+		{"rm", "TOKEN"},
+		{"export"},
+		{"key"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setup(t)
+			path := isolateKeyPath(t)
+			s, err := internal.OpenStore(".envmagic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Set("default", "TOKEN", []byte("ciphertext")); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			r := run(args...)
+			switch args[0] {
+			case "list":
+				if r.code() != 0 || r.stdout != "TOKEN\n" || r.stderr != "" {
+					t.Errorf("list: %+v", r)
+				}
+			case "rm":
+				if r.code() != 0 || r.stdout != "" || r.stderr != "envmagic: removed TOKEN from namespace \"default\"\n" {
+					t.Errorf("rm: %+v", r)
+				}
+				s, err := internal.OpenStore(".envmagic")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = s.Close() }()
+				if _, err := s.Get("default", "TOKEN"); !errors.Is(err, internal.ErrEntryNotFound) {
+					t.Errorf("entry not removed: %v", err)
+				}
+			default:
+				want := fmt.Sprintf("envmagic: no key at %s; restore it with envmagic key --set, or run envmagic set to create one", path)
+				if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || r.err.Error() != want {
+					t.Errorf("result=%+v; want exit 1 and error %q", r, want)
+				}
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("command created a key: %v", err)
+			}
+		})
+	}
+}
+
 // TestSetAndGet covers explicit and implicit syntax, raw values, and load exports.
 func TestSetAndGet(t *testing.T) {
 	run := setup(t)
@@ -464,7 +519,7 @@ func TestSetStdinSizeLimit(t *testing.T) {
 	if r := run("--yes", "set", "TOKEN"); r.code() != 0 || r.stdout != "" {
 		t.Fatalf("set: exit=%d stdout bytes=%d err=%v", r.code(), len(r.stdout), r.err)
 	}
-	s, key, _, err := openActiveStore()
+	s, key, _, err := openActiveStore(true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2042,52 +2097,63 @@ func TestImportCreatesStoreWithEnvNonInteractive(t *testing.T) {
 }
 
 func TestNewEncryptionKeyOutput(t *testing.T) {
-	for _, terminal := range []bool{false, true} {
-		name := "non-terminal"
-		if terminal {
-			name = "terminal"
-		}
-		t.Run(name, func(t *testing.T) {
-			run := setupBare(t)
+	for _, command := range []string{"set", "import"} {
+		for _, terminal := range []bool{false, true} {
+			name := "non-terminal"
 			if terminal {
-				original := stderrIsTerminal
-				stderrIsTerminal = func() bool { return true }
-				t.Cleanup(func() { stderrIsTerminal = original })
+				name = "terminal"
 			}
+			t.Run(command+"/"+name, func(t *testing.T) {
+				run := setupBare(t)
+				if terminal {
+					original := stderrIsTerminal
+					stderrIsTerminal = func() bool { return true }
+					t.Cleanup(func() { stderrIsTerminal = original })
+				}
 
-			r := run("--yes", "set", "TOKEN", "secret")
-			if r.code() != 0 {
-				t.Fatalf("set: exit=%d stderr=%q", r.code(), r.stderr)
-			}
-			path, err := internal.KeyPath()
-			if err != nil {
-				t.Fatal(err)
-			}
-			key, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoded := base64.StdEncoding.EncodeToString(key)
-			if !terminal && (strings.Contains(r.stdout, encoded) || strings.Contains(r.stderr, encoded)) {
-				t.Error("key leaked into non-terminal output")
-			}
-			want := fmt.Sprintf("envmagic: generated new encryption key at %s\n", path)
-			if terminal {
-				want += fmt.Sprintf("envmagic: key (base64): %s\n", encoded)
-				want += "envmagic: You can display the key again later by running `envmagic key`.\n"
-			} else {
-				want += "envmagic: run `envmagic key` on a terminal to see the key\n"
-			}
-			want += "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.\n"
-			cwd, err := os.Getwd()
-			if err != nil {
-				t.Fatal(err)
-			}
-			want += fmt.Sprintf("envmagic: stored TOKEN (namespace %q) in %s\n", "default", filepath.Join(cwd, ".envmagic"))
-			if r.stdout != "" || r.stderr != want {
-				t.Errorf("set: stdout=%q stderr=%q, want empty stdout and stderr=%q", r.stdout, r.stderr, want)
-			}
-		})
+				args := []string{"--yes", "set", "TOKEN", "secret"}
+				if command == "import" {
+					setTestStdin(t, "TOKEN=secret\n")
+					args = []string{"--yes", "import"}
+				}
+				r := run(args...)
+				if r.code() != 0 {
+					t.Fatalf("%s: exit=%d stderr=%q", command, r.code(), r.stderr)
+				}
+				path, err := internal.KeyPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				encoded := base64.StdEncoding.EncodeToString(key)
+				if !terminal && (strings.Contains(r.stdout, encoded) || strings.Contains(r.stderr, encoded)) {
+					t.Error("key leaked into non-terminal output")
+				}
+				want := fmt.Sprintf("envmagic: generated new encryption key at %s\n", path)
+				if terminal {
+					want += fmt.Sprintf("envmagic: key (base64): %s\n", encoded)
+					want += "envmagic: You can display the key again later by running `envmagic key`.\n"
+				} else {
+					want += "envmagic: run `envmagic key` on a terminal to see the key\n"
+				}
+				want += "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.\n"
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if command == "import" {
+					want += "envmagic: imported 1 variable(s) from stdin into namespace \"default\"\n"
+				} else {
+					want += fmt.Sprintf("envmagic: stored TOKEN (namespace %q) in %s\n", "default", filepath.Join(cwd, ".envmagic"))
+				}
+				if r.stdout != "" || r.stderr != want {
+					t.Errorf("%s: stdout=%q stderr=%q, want empty stdout and stderr=%q", command, r.stdout, r.stderr, want)
+				}
+			})
+		}
 	}
 }
 
@@ -2495,6 +2561,8 @@ func TestKeyWriteErrors(t *testing.T) {
 				args := []string{"key"}
 				if command == "set" {
 					args = append(args, "--set", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
+				} else {
+					args = []string{"--yes", "set", "TOKEN", "secret"}
 				}
 				r := run(args...)
 				if r.code() != 1 || r.stdout != "" || r.err == nil || !strings.Contains(r.err.Error(), want) || strings.Contains(r.stderr, "generated new encryption key") || strings.Contains(r.stderr, "key restored") {
