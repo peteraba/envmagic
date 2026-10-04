@@ -152,7 +152,7 @@ func createExclusive(path string, key []byte) error {
 func writeNewKey(f *os.File, key []byte) error {
 	// ponytail: Sync/Close failures, createExclusive's cleanup after a failed write, and createKey's
 	// "do not publish a temp file whose write failed" gate lack tests; they need a fault-injecting filesystem or writer seam.
-	// The fchmod is redundant for a brand-new temp file (already 0600), but keeps the fallback path's mode independent of umask.
+	// The fchmod keeps the mode at 0600 whatever the umask, on both the link and fallback paths.
 	var err error
 	if err = f.Chmod(0o600); err != nil {
 		err = fmt.Errorf("failed to set key file permissions %s: %w", f.Name(), err)

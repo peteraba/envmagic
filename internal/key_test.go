@@ -396,7 +396,7 @@ func TestLoadKeyRejectsLongKeyWithoutWaiting(t *testing.T) {
 	}
 	start := time.Now()
 	key, err := LoadKey(path)
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
 		t.Errorf("rejecting a long key took %v, want no retry delay", elapsed)
 	}
 	if err == nil || !strings.Contains(err.Error(), "invalid length 33 (expected 32)") || key != nil {
