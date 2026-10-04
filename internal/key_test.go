@@ -103,3 +103,27 @@ func TestWriteKeyErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteKeyChmodFailure(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires Unix permission checks as a non-root user")
+	}
+	before, err := os.Stat("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.Symlink("/dev/null", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err == nil || !strings.Contains(err.Error(), "failed to set key file permissions") {
+		t.Fatalf("WriteKey error=%v, want permission error", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || before.Mode() != after.Mode() || before.Size() != after.Size() {
+		t.Fatal("/dev/null changed after chmod failure")
+	}
+}

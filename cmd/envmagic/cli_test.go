@@ -2357,23 +2357,36 @@ func TestKeyPermissionsWarning(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not report Unix permission bits")
 	}
-	run := setup(t)
-	path := isolateKeyPath(t)
-	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
-		t.Fatal(r.err)
-	}
-	for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o600} {
-		t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
-			if err := os.Chmod(path, mode); err != nil {
-				t.Fatal(err)
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			run := setup(t)
+			path := isolateKeyPath(t)
+			if r := run("set", "TOKEN", "secret"); r.code() != 0 {
+				t.Fatal(r.err)
 			}
-			wantStderr := ""
-			if mode != 0o600 {
-				wantStderr = fmt.Sprintf("envmagic: warning: key file %s is readable by other users (mode %04o); run chmod 600 %s\n", path, mode, path)
+			if kind == "symlink" {
+				target := filepath.Join(t.TempDir(), "key")
+				if err := os.Rename(path, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
 			}
-			r := run("get", "TOKEN")
-			if r.code() != 0 || r.stdout != "secret\n" || r.stderr != wantStderr {
-				t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want stderr=%q", r.code(), r.stdout, r.stderr, r.err, wantStderr)
+			for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o620, 0o602, 0o610, 0o601, 0o600, 0o700} {
+				t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+					wantStderr := ""
+					if mode != 0o600 && mode != 0o700 {
+						wantStderr = fmt.Sprintf("envmagic: warning: key file %s is readable by other users (mode %04o); run chmod 600 %s\n", path, mode, path)
+					}
+					r := run("get", "TOKEN")
+					if r.code() != 0 || r.stdout != "secret\n" || r.stderr != wantStderr {
+						t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want stderr=%q", r.code(), r.stdout, r.stderr, r.err, wantStderr)
+					}
+				})
 			}
 		})
 	}
