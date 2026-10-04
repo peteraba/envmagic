@@ -21,6 +21,7 @@ func TestLoadFormat(t *testing.T) {
 		}
 	}
 	wantA := "$env:A = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('c2luZ2xlICfigJjigJnigJrigJsgZG91YmxlICIgZG9sbGFyICQgYmFja3RpY2sgYCBzbGFzaCBcCsOhcnbDrXog6ZuqCg=='))\n"
+	fishA := "set -gx A 'single \\'‘’‚‛ double \" dollar $ backtick ` slash \\\\\nárvíz 雪\n'\n"
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -30,6 +31,11 @@ func TestLoadFormat(t *testing.T) {
 		{[]string{"--format", "pwsh", "-n", "empty", "load"}, ""},
 		{[]string{"--format", "pwsh", "get", "A"}, value + "\n"},
 		{[]string{"--format", "pwsh", "list"}, "A\nB\n"},
+		{[]string{"--format", "fish", "load"}, strings.TrimSuffix(fishA, "\n") + " &&\nset -gx B ''\n"},
+		{[]string{"--format", "fish", "load", "A"}, fishA},
+		{[]string{"--format", "fish", "-n", "empty", "load"}, ""},
+		{[]string{"--format", "fish", "get", "A"}, value + "\n"},
+		{[]string{"--format", "fish", "list"}, "A\nB\n"},
 		{[]string{"--format", "posix", "load"}, "export A=\"single '‘’‚‛ double \\\" dollar \\$ backtick \\` slash \\\\\nárvíz 雪\n\" &&\nexport B=\"\"\n"},
 	} {
 		if r := run(tc.args...); r.code() != 0 || r.stdout != tc.want || r.stderr != "" {
@@ -42,28 +48,35 @@ func TestLoadFormat(t *testing.T) {
 		if plain.code() != 0 || explicit.code() != 0 || plain.stdout != explicit.stdout {
 			t.Errorf("posix %v: default=%+v explicit=%+v", args, plain, explicit)
 		}
-		debug := run(append([]string{"--format", "pwsh", "--debug"}, args...)...)
-		if debug.code() != 0 || debug.stderr != debug.stdout || !strings.HasPrefix(debug.stdout, wantA) {
-			t.Errorf("debug %v: %+v", args, debug)
+		for _, format := range []string{"pwsh", "fish"} {
+			debug := run(append([]string{"--format", format, "--debug"}, args...)...)
+			if debug.code() != 0 || debug.stderr != debug.stdout || debug.stdout != run(append([]string{"--format", format}, args...)...).stdout {
+				t.Errorf("debug %s %v: %+v", format, args, debug)
+			}
 		}
 	}
 	for _, format := range []string{"invalid", "", "powershell"} {
-		if r := run("--format", format, "load"); r.code() != 2 || r.stdout != "" || !strings.Contains(r.err.Error(), "expected posix or pwsh") {
+		if r := run("--format", format, "load"); r.code() != 2 || r.stdout != "" || !strings.Contains(r.err.Error(), "expected posix, pwsh, or fish") {
 			t.Errorf("invalid format %q: %+v", format, r)
 		}
 	}
 	for _, tc := range []struct {
-		value string
-		want  string
+		format string
+		value  string
+		want   string
 	}{
-		{"hello", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('aGVsbG8='))\n"},
-		{"雪\r\n", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('6ZuqDQo='))\n"},
-		{"x\r", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('eA0='))\n"},
+		{"pwsh", "hello", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('aGVsbG8='))\n"},
+		{"pwsh", "雪\r\n", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('6ZuqDQo='))\n"},
+		{"pwsh", "x\r", "$env:SAMPLE = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('eA0='))\n"},
+		{"fish", "a`b$c\"d\\e", "set -gx SAMPLE 'a`b$c\"d\\\\e'\n"},
+		{"fish", "'\\\\'trailing\\", "set -gx SAMPLE '\\'\\\\\\\\\\'trailing\\\\'\n"},
+		{"fish", "雪\r\n", "set -gx SAMPLE '雪\r\n'\n"},
+		{"fish", "a\xffb", "set -gx SAMPLE 'a\xffb'\n"},
 	} {
 		if r := run("set", "SAMPLE", tc.value); r.code() != 0 {
 			t.Fatal(r.err)
 		}
-		if r := run("--format", "pwsh", "load", "SAMPLE"); r.code() != 0 || r.stdout != tc.want || r.stderr != "" {
+		if r := run("--format", tc.format, "load", "SAMPLE"); r.code() != 0 || r.stdout != tc.want || r.stderr != "" {
 			t.Errorf("value=%q: result=%+v, want stdout=%q", tc.value, r, tc.want)
 		}
 	}

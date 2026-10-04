@@ -61,10 +61,10 @@ func newApp() *cli.Command {
 			&cli.StringFlag{
 				Name:  "format",
 				Value: "posix",
-				Usage: "load output format: posix (default) or pwsh",
+				Usage: "load output format: posix (default), pwsh, or fish",
 				Action: func(_ context.Context, _ *cli.Command, format string) error {
-					if format != "posix" && format != "pwsh" {
-						return cli.Exit(fmt.Sprintf("envmagic: invalid format %q (expected posix or pwsh)", format), 2)
+					if format != "posix" && format != "pwsh" && format != "fish" {
+						return cli.Exit(fmt.Sprintf("envmagic: invalid format %q (expected posix, pwsh, or fish)", format), 2)
 					}
 					return nil
 				},
@@ -447,6 +447,9 @@ func runSourceAll(namespace string, debug bool, format string) error {
 func loadAssignment(name, value, format string) string {
 	if format == "pwsh" {
 		return fmt.Sprintf("$env:%s = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s'))", name, base64.StdEncoding.EncodeToString([]byte(value)))
+	}
+	if format == "fish" {
+		return fmt.Sprintf("set -gx %s '%s'", name, strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value))
 	}
 	return fmt.Sprintf("export %s=%s", name, shellQuote(value))
 }
