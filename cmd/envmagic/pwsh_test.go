@@ -136,8 +136,6 @@ func main() {
 	t.Setenv("POWERSHELL_TELEMETRY_OPTOUT", "1")
 	for _, shell := range []string{"bash", "zsh", "fish", "pwsh"} {
 		t.Run(shell, func(t *testing.T) {
-			called := filepath.Join(t.TempDir(), "called")
-			t.Setenv("ENVMAGIC_TEST_CALLED", called)
 			path, err := exec.LookPath(shell)
 			if err != nil {
 				if os.Getenv("CI") != "" {
@@ -154,11 +152,11 @@ func main() {
 				init, exit = shellInitPwsh, "; exit $LASTEXITCODE"
 				options = []string{"-NoProfile", "-NonInteractive", "-Command"}
 			}
-			for _, args := range wrapperLoadArgs {
-				if !strings.HasPrefix(args, "load '") {
-					continue
-				}
-				cmd := exec.Command(path, append(options, init+"envmagic "+args+exit)...)
+			check := func(t *testing.T, args, prefix string) {
+				t.Helper()
+				called := filepath.Join(t.TempDir(), "called")
+				t.Setenv("ENVMAGIC_TEST_CALLED", called)
+				cmd := exec.Command(path, append(options, init+prefix+"envmagic "+args+exit)...)
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
 				out, err := cmd.Output()
@@ -171,6 +169,28 @@ func main() {
 				if _, err := os.Stat(called); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("%s: program called (marker stat: %v)", args, err)
 				}
+			}
+			for _, args := range wrapperLoadArgs {
+				if strings.HasPrefix(args, "load '") {
+					t.Run(args, func(t *testing.T) { check(t, args, "") })
+				}
+			}
+			if shell == "bash" {
+				t.Run("UTF-8 locale", func(t *testing.T) {
+					out, err := exec.Command("locale", "-a").Output()
+					if err != nil {
+						t.Skipf("cannot list locales: %v", err)
+					}
+					for _, locale := range []string{"en_US.UTF-8", "en_US.utf8", "C.UTF-8", "C.utf8"} {
+						if strings.Contains("\n"+string(out), "\n"+locale+"\n") {
+							t.Setenv("LC_ALL", locale)
+							t.Logf("LC_ALL=%s, globasciiranges disabled", locale)
+							check(t, "load 'é'", "shopt -u globasciiranges; ")
+							return
+						}
+					}
+					t.Skip("no en_US or C UTF-8 locale available")
+				})
 			}
 		})
 	}
@@ -222,6 +242,16 @@ func TestShellWrapperPwsh(t *testing.T) {
 		}
 	}
 	init := "envmagic shell-init pwsh | Out-String | Invoke-Expression\n"
+	t.Run("missing namespace", func(t *testing.T) {
+		cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:NAME, Env:VERSION, Env:HELP, Env:H, Env:_X1, Env:EMPTY, Env:LOAD -ErrorAction SilentlyContinue; envmagic load -n; $code = $LASTEXITCODE; if (Get-Item Env:NAME, Env:VERSION, Env:HELP, Env:H, Env:_X1, Env:EMPTY, Env:LOAD -ErrorAction SilentlyContinue) { throw 'unexpected output applied' }; exit $code`)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "Incorrect Usage: flag needs an argument: -n\n" {
+			t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+		}
+	})
 	for _, args := range wrapperLoadArgs {
 		t.Run("args "+args, func(t *testing.T) {
 			commandArgs := args

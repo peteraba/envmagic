@@ -69,7 +69,7 @@ envmagic() {
         case "$_envmagic_arg" in
             -n|--namespace) _envmagic_skip=1 ;;
             -n=*|--namespace=*) ;;
-            ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*)
+            ''|[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
                 printf 'envmagic: load accepts only -n/--namespace and a NAME (got %s)\n' "$_envmagic_arg" >&2
                 return 2
                 ;;
@@ -195,7 +195,7 @@ function envmagic {
             return
         }
     }
-    # Keep --format prepended so it stays a root flag before any NAME.
+    # Prepending keeps a trailing -n/--namespace from swallowing --format.
     $out = & $binary --format pwsh @argv
     if ($LASTEXITCODE -ne 0) { return }
     $values = @{}

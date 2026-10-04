@@ -2055,6 +2055,7 @@ var wrapperLoadArgs = []string{
 	"--debug load", "--debug load -n", "load --", "--n x load", "-namespace x load",
 	"-d load", "--yes load", "--here load", "load -h=true", "load --help=false",
 	"load ' -h'", "load ' --'", "load ' --v'", "load '-h '", "load ''", "load 'A B'", "load 'a-b'",
+	"load 'NAME\n'", "load '\u212A'", "load '\u0130'",
 }
 
 func TestHelpVariableNames(t *testing.T) {
