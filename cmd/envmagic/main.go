@@ -386,7 +386,7 @@ func runSourceAll(namespace string, debug bool) error {
 	}
 
 	var output strings.Builder
-	for _, e := range entries {
+	for i, e := range entries {
 		plain, err := internal.Decrypt(key, e.Enc, internal.AD(namespace, e.Name))
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
@@ -394,7 +394,11 @@ func runSourceAll(namespace string, debug bool) error {
 		if err := checkValue(e.Name, string(plain)); err != nil {
 			return err
 		}
-		fmt.Fprintf(&output, "export %s=%s\n", e.Name, shellQuote(string(plain)))
+		ending := "\n"
+		if i < len(entries)-1 {
+			ending = " &&\n"
+		}
+		fmt.Fprintf(&output, "export %s=%s%s", e.Name, shellQuote(string(plain)), ending)
 	}
 	fmt.Print(output.String())
 	if debug {
