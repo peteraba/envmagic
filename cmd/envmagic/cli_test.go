@@ -2137,6 +2137,8 @@ func TestImportQuotedValues(t *testing.T) {
 	for _, tc := range []struct{ name, input, want, wantErr string }{
 		{"double trailing garbage", `B="first"second`, "", "line 1: unexpected characters after quoted value"},
 		{"single trailing garbage", `B='first'second`, "", "line 1: unexpected characters after quoted value"},
+		{"double garbage before comment", `A="x"garbage#comment`, "", "line 1: unexpected characters after quoted value"},
+		{"single garbage before comment", `A='x'garbage#comment`, "", "line 1: unexpected characters after quoted value"},
 		{"second line garbage", "# comment\nA=\"x\" second", "", "line 2: unexpected characters after quoted value"},
 		{"double leading space", `A= "quoted"`, "quoted", ""},
 		{"single leading tab", "A=\t'quoted'", "quoted", ""},
@@ -2145,6 +2147,7 @@ func TestImportQuotedValues(t *testing.T) {
 		{"single comment", `A='x'#c`, "x", ""},
 		{"trailing whitespace", "A=\"x\" \t\r\n", "x", ""},
 		{"BOM", "\uFEFFA=1", "1", ""},
+		{"indented BOM", " \t\uFEFFA=1", "", `line 1: invalid variable name "\ufeffA"`},
 		{"later BOM", "# comment\n\uFEFFA=1", "", "line 2: invalid variable name"},
 		{"duplicate", "A=1\nA=2", "2", ""},
 		{"unquoted unchanged", "A= \tx #c \t", " \tx #c", ""},
