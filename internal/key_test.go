@@ -111,7 +111,9 @@ func TestWriteKeyErrors(t *testing.T) {
 	for _, operation := range []string{"directory", "write"} {
 		t.Run(operation, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "blocked")
+			want := "failed to write key file"
 			if operation == "directory" {
+				want = "failed to create key file directory"
 				if err := os.WriteFile(path, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -119,8 +121,8 @@ func TestWriteKeyErrors(t *testing.T) {
 			} else if err := os.Mkdir(path, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err == nil {
-				t.Fatal("WriteKey accepted a blocked path")
+			if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("WriteKey error=%v, want %q", err, want)
 			}
 		})
 	}
