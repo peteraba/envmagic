@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -185,6 +186,7 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 	var result [][2]string
 
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 
 	lineNum := 0
 	for sc.Scan() {
@@ -220,7 +222,14 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 		result = append(result, [2]string{name, val})
 	}
 
-	return result, sc.Err()
+	err := sc.Err()
+	if errors.Is(err, bufio.ErrTooLong) {
+		return nil, fmt.Errorf("line %d: %w", lineNum+1, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func parseDotenvValue(raw string) (string, error) {

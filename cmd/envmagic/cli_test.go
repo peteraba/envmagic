@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/urfave/cli/v3"
 
@@ -86,6 +89,11 @@ func setupBare(t *testing.T) func(args ...string) result {
 		origOut, origErr := os.Stdout, os.Stderr
 		os.Stdout, os.Stderr = wOut, wErr
 
+		var bufOut, bufErr bytes.Buffer
+		var drains sync.WaitGroup
+		drains.Go(func() { _, _ = io.Copy(&bufOut, rOut) })
+		drains.Go(func() { _, _ = io.Copy(&bufErr, rErr) })
+
 		app := newApp()
 		// Prevent urfave/cli's error handler from calling os.Exit during tests.
 		app.ExitErrHandler = func(_ context.Context, _ *cli.Command, _ error) {}
@@ -96,9 +104,7 @@ func setupBare(t *testing.T) func(args ...string) result {
 		_ = wErr.Close()
 		os.Stdout, os.Stderr = origOut, origErr
 
-		var bufOut, bufErr bytes.Buffer
-		_, _ = io.Copy(&bufOut, rOut)
-		_, _ = io.Copy(&bufErr, rErr)
+		drains.Wait()
 
 		return result{bufOut.String(), bufErr.String(), appErr}
 	}
@@ -1455,6 +1461,58 @@ func TestImportAndExport(t *testing.T) {
 	}
 	if string(exported) != wantExport {
 		t.Errorf("exported file: got %q, want %q", exported, wantExport)
+	}
+}
+
+func TestLongValueExportImport(t *testing.T) {
+	run := setup(t)
+	value := strings.Repeat("a\"$\n", 17500)
+	if r := run("set", "LONG", value); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	path := filepath.Join(t.TempDir(), "export.env")
+	if r := run("export", path); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r := run("-n", "imported", "import", path); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+
+	r := run("-n", "imported", "get", "LONG")
+	if r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r.stdout != value+"\n" {
+		t.Fatalf("get: got %d bytes, want exact value plus newline", len(r.stdout))
+	}
+	r = run("-n", "imported", "--debug", "load")
+	if r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r.stderr != r.stdout || len(r.stderr) <= 64<<10 {
+		t.Fatalf("debug load: stdout %d bytes, stderr %d bytes, want identical output over 64 KiB", len(r.stdout), len(r.stderr))
+	}
+}
+
+func TestDotenvLineTooLong(t *testing.T) {
+	_, err := parseDotenv(strings.NewReader("# comment\n\nLONG=" + strings.Repeat("a", 16<<20)))
+	if err == nil || err.Error() != "line 3: bufio.Scanner: token too long" {
+		t.Fatalf("got %v, want scanner error on line 3", err)
+	}
+	entries, err := parseDotenv(strings.NewReader("LONG=" + strings.Repeat("a", 16<<20-6) + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || len(entries[0][1]) != 16<<20-6 {
+		t.Fatal("want one entry with the largest accepted value")
+	}
+}
+
+func TestDotenvReaderError(t *testing.T) {
+	want := errors.New("reader failed")
+	_, err := parseDotenv(io.MultiReader(strings.NewReader("A=1\nB=2\n"), iotest.ErrReader(want)))
+	if !errors.Is(err, want) || strings.HasPrefix(err.Error(), "line ") {
+		t.Fatalf("got %v, want reader error without a line prefix", err)
 	}
 }
 
