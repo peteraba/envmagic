@@ -24,6 +24,8 @@ var version = "v0.5.0"
 
 var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
+var stderrIsTerminal = func() bool { return isatty.IsTerminal(os.Stderr.Fd()) }
+
 var fileOwner = internal.OwnerUID
 
 var currentUID = os.Getuid
@@ -592,8 +594,12 @@ func loadKey() ([]byte, error) {
 
 func notifyNewEncryptionKey(key []byte, path string) {
 	fmt.Fprintf(os.Stderr, "envmagic: generated new encryption key at %s\n", path)
-	fmt.Fprintf(os.Stderr, "envmagic: key (base64): %s\n", base64.StdEncoding.EncodeToString(key))
-	fmt.Fprintf(os.Stderr, "envmagic: You can display the key again later by running `envmagic key`.\n")
+	if stderrIsTerminal() {
+		fmt.Fprintf(os.Stderr, "envmagic: key (base64): %s\n", base64.StdEncoding.EncodeToString(key))
+		fmt.Fprintf(os.Stderr, "envmagic: You can display the key again later by running `envmagic key`.\n")
+	} else {
+		fmt.Fprintln(os.Stderr, "envmagic: run `envmagic key` on a terminal to see the key")
+	}
 	fmt.Fprintln(os.Stderr, "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.")
 }
 
