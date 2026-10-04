@@ -39,7 +39,7 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return errorf("decrypt %s: %v (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
-		if err := checkValue(e.Name, string(plain)); err != nil {
+		if err := checkValue(e.Name, string(plain), "posix"); err != nil {
 			return err
 		}
 		fmt.Fprintf(&output, "%s=%s\n", e.Name, dotenvQuote(string(plain)))
@@ -184,7 +184,7 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 // creating the store if needed. Existing entries are overwritten.
 func storeAll(cmd *cli.Command, ns string, kvs [][2]string, includeName bool) (string, error) {
 	for _, kv := range kvs {
-		if err := checkValue(kv[0], kv[1]); err != nil {
+		if err := checkValue(kv[0], kv[1], "posix"); err != nil {
 			return "", err
 		}
 	}

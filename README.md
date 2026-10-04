@@ -44,8 +44,24 @@ eval "$(envmagic shell-init zsh)"
 envmagic shell-init fish | source
 ```
 
+For PowerShell, add this to `$PROFILE`:
+
+```powershell
+envmagic shell-init pwsh | Out-String | Invoke-Expression
+```
+
 Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
 statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
+Use `envmagic --format pwsh load [NAME]` to print ASCII-only PowerShell assignments
+that decode base64 values as UTF-8 with `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('…'))`.
+Apply them with `envmagic --format pwsh load | Out-String | Invoke-Expression`.
+The PowerShell wrapper validates all assignments and sets variables without evaluating code.
+PowerShell output rejects values that are not valid UTF-8. Empty values stay set
+in PowerShell 7.6.6 on Linux (checked; Windows not verified); versions that remove
+variables on empty-string assignment will unset them instead. Supplying `--format`
+makes the shell wrappers print the assignments without applying them. A namespace
+literally named like a flag (`--help`, `--format`) also passes through without
+loading into the shell.
 `envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
 Bare `envmagic` shows help. `--debug` echoes only load exports to stderr.
 
@@ -67,6 +83,8 @@ The library refuses to open stores owned by another user on Unix.
 If none exists, `set` and `import` offer to create one in the current directory;
 use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt (required when stdin is not a terminal).
 Use `-n NS` to select a namespace; the default is `default`.
+PowerShell consumes a bare `--`; quote it when storing a value starting with `-`:
+`envmagic set '--' NAME -value`.
 
 Variable names are uppercased automatically: `envmagic api_key …` stores
 `API_KEY`. If a name matches a subcommand (`get`, `set`, `load`, `list`, `key`, …),
@@ -142,26 +160,26 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 
 ## Commands
 
-| Command                                  | Description                                                      |
-| ---------------------------------------- | ---------------------------------------------------------------- |
-| `envmagic [-n NS]`                       | Show help                                                        |
-| `envmagic [-n NS] load`                  | Export all values in a namespace to the shell                    |
-| `envmagic [-n NS] get NAME`              | Print the raw decrypted value and a newline                      |
-| `envmagic [-n NS] NAME`                  | Alias of `get NAME`                                              |
-| `envmagic [-n NS] load NAME`             | Emit `export NAME=…`; wrapper loads it into the shell            |
-| `envmagic [-n NS] set NAME [VALUE]`      | Encrypt and store `VALUE` under `NAME` (piped stdin if omitted)  |
-| `envmagic [-n NS] NAME VALUE`            | Encrypt and store `VALUE` under `NAME`                           |
-| `envmagic [-n NS] list` (or `ls`)        | List names in a namespace                                        |
-| `envmagic [-n NS] rm NAME`               | Remove a stored entry                                            |
-| `envmagic [-n NS] export [FILE]`         | Export namespace to a `.env` file (stdout if omitted)            |
-| `envmagic [-n NS] import [FILE]`         | Import `.env` values, overwriting existing names (stdin if omitted) |
-| `envmagic [-n NS] import -i FILE`        | Fill values in an interactive form (template values as defaults) |
-| `envmagic [-n NS] import --empty [FILE]` | Store empty values, ignoring template defaults                   |
-| `envmagic key`                           | Show the key file path and base64-encoded content                |
-| `envmagic key --set <base64>`            | Restore the key from a base64 string                             |
-| `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
-| `envmagic help`                          | Show help                                                        |
-| `envmagic --version`                     | Show version                                                     |
+| Command                                       | Description                                                         |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| `envmagic [-n NS]`                            | Show help                                                           |
+| `envmagic [-n NS] load`                       | Export all values in a namespace to the shell                       |
+| `envmagic [-n NS] get NAME`                   | Print the raw decrypted value and a newline                         |
+| `envmagic [-n NS] NAME`                       | Alias of `get NAME`                                                 |
+| `envmagic [-n NS] load NAME`                  | Emit `export NAME=…`; wrapper loads it into the shell               |
+| `envmagic [-n NS] set NAME [VALUE]`           | Encrypt and store `VALUE` under `NAME` (piped stdin if omitted)     |
+| `envmagic [-n NS] NAME VALUE`                 | Encrypt and store `VALUE` under `NAME`                              |
+| `envmagic [-n NS] list` (or `ls`)             | List names in a namespace                                           |
+| `envmagic [-n NS] rm NAME`                    | Remove a stored entry                                               |
+| `envmagic [-n NS] export [FILE]`              | Export namespace to a `.env` file (stdout if omitted)               |
+| `envmagic [-n NS] import [FILE]`              | Import `.env` values, overwriting existing names (stdin if omitted) |
+| `envmagic [-n NS] import -i FILE`             | Fill values in an interactive form (template values as defaults)    |
+| `envmagic [-n NS] import --empty [FILE]`      | Store empty values, ignoring template defaults                      |
+| `envmagic key`                                | Show the key file path and base64-encoded content                   |
+| `envmagic key --set <base64>`                 | Restore the key from a base64 string                                |
+| `envmagic shell-init <bash\|zsh\|fish\|pwsh>` | Print shell integration to eval                                     |
+| `envmagic help`                               | Show help                                                           |
+| `envmagic --version`                          | Show version                                                        |
 
 For real secrets, prefer `printf '%s' "$SECRET" | envmagic set NAME` to keep the value out of shell history and process arguments; stdin is limited to 1 MiB, removes exactly one trailing newline (LF or CRLF), and refuses empty input (use `envmagic set NAME ''` to store an empty value). Creating a store with the stdin form requires `--yes` or `ENVMAGIC_NONINTERACTIVE=1`.
 

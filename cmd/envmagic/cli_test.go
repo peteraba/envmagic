@@ -1406,6 +1406,8 @@ func TestEmitRejectsStoredNUL(t *testing.T) {
 		{"load", "Z_BAD"},
 		{"--debug", "load"},
 		{"--debug", "load", "Z_BAD"},
+		{"--format", "pwsh", "load"},
+		{"--format", "pwsh", "--debug", "load", "Z_BAD"},
 		{"export"},
 	} {
 		r := run(args...)
@@ -1884,7 +1886,7 @@ func TestShellInit(t *testing.T) {
 	if !strings.Contains(bash.stdout, "envmagic: environment variables set") {
 		t.Errorf("posix init: expected load confirmation, got %q", bash.stdout)
 	}
-	for _, want := range []string{`for _envmagic_arg in "$@"`, "-n|--namespace)", "-h|--help|-v|--version)", `"$_envmagic_command" != load`} {
+	for _, want := range []string{`for _envmagic_arg in "$@"`, "-n|--namespace)", "-h|--help|-v|--version|--format|--format=*|-format|-format=*)", `"$_envmagic_command" != load`} {
 		if !strings.Contains(bash.stdout, want) {
 			t.Errorf("posix init: missing %q", want)
 		}
@@ -1909,14 +1911,20 @@ func TestShellInit(t *testing.T) {
 		}
 	}
 
-	r := run("shell-init", "powershell")
-	if r.code() == 0 {
-		t.Error("unknown shell: expected non-zero exit")
+	pwsh := run("shell-init", "pwsh")
+	powershell := run("shell-init", "powershell")
+	if pwsh.code() != 0 || pwsh.stdout != shellInitPwsh || powershell.code() != 0 || powershell.stdout != pwsh.stdout {
+		t.Errorf("PowerShell init: pwsh=%+v powershell=%+v", pwsh, powershell)
+	}
+
+	r := run("shell-init", "unknown")
+	if r.code() != 2 || !strings.Contains(r.stderr, "supported: bash, zsh, fish, pwsh") {
+		t.Errorf("unknown shell: %+v", r)
 	}
 
 	r = run("shell-init")
-	if r.code() == 0 {
-		t.Error("shell-init no args: expected non-zero exit")
+	if r.code() != 2 || !strings.Contains(r.err.Error(), "<bash|zsh|fish|pwsh>") {
+		t.Errorf("shell-init no args: %+v", r)
 	}
 }
 
@@ -1927,20 +1935,16 @@ func TestShellWrapper(t *testing.T) {
 		}
 		t.Skip("bash is not on PATH")
 	}
-	binDir := t.TempDir()
-	build := exec.Command("go", "build", "-o", filepath.Join(binDir, "envmagic"), "./")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build envmagic: %v\n%s", err, out)
-	}
-	help, err := exec.Command(filepath.Join(binDir, "envmagic"), "--help").Output()
+	binary := buildShellBinary(t)
+	help, err := exec.Command(binary, "--help").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadHelp, err := exec.Command(filepath.Join(binDir, "envmagic"), "load", "--help").Output()
+	loadHelp, err := exec.Command(binary, "load", "--help").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	hostileHome := t.TempDir()
 	hostileFile := filepath.Join(hostileHome, ".zshenv")
 	if err := os.WriteFile(hostileFile, []byte("envmagic() { echo hijacked; }\n"), 0o600); err != nil {
@@ -1966,6 +1970,7 @@ func TestShellWrapper(t *testing.T) {
 			multiline := "-----BEGIN KEY-----\n  abc\ndef\n-----END KEY-----\n"
 			for _, args := range [][]string{
 				{"set", "name", value},
+				{"-n", "X", "set", "X", "$(echo executed)"},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
 				{"-n", "multiline", "set", "--", "name", multiline},
@@ -2003,6 +2008,10 @@ func TestShellWrapper(t *testing.T) {
 				want    string
 				wantErr string
 			}{
+				{`envmagic -n X load --format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
+				{`envmagic -n X load --format=pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
+				{`envmagic -n X load -format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
+				{`envmagic -n X load -format=pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
 				{`envmagic -n staging list`, "NAME\nOTHER\n", ""},
 				{`envmagic --namespace staging list`, "NAME\nOTHER\n", ""},
 				{`envmagic --namespace=staging list`, "NAME\nOTHER\n", ""},

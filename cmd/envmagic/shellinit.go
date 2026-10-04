@@ -11,29 +11,31 @@ import (
 // cmdShellInit outputs shell code so load forms update the current shell's environment.
 func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() == 0 {
-		return cli.Exit("usage: envmagic shell-init <bash|zsh|fish>", 2)
+		return cli.Exit("usage: envmagic shell-init <bash|zsh|fish|pwsh>", 2)
 	}
 	switch cmd.Args().First() {
 	case "bash", "zsh", "sh":
 		fmt.Print(shellInitPosix)
 	case "fish":
 		fmt.Print(shellInitFish)
+	case "pwsh", "powershell":
+		fmt.Print(shellInitPwsh)
 	default:
-		fmt.Fprintf(os.Stderr, "envmagic: unsupported shell %q (supported: bash, zsh, fish)\n", cmd.Args().First())
+		fmt.Fprintf(os.Stderr, "envmagic: unsupported shell %q (supported: bash, zsh, fish, pwsh)\n", cmd.Args().First())
 		return cli.Exit("", 2)
 	}
 	return nil
 }
 
 // shellInitPosix / shellInitFish eval only load; confirm only load without a name.
-// Namespace values are skipped; help/version flags always bypass eval.
+// Namespace values are skipped; help/version/format flags always bypass eval.
 
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
     local _envmagic_arg _envmagic_command='' _envmagic_positional=0 _envmagic_skip=0
     for _envmagic_arg in "$@"; do
         case "$_envmagic_arg" in
-            -h|--help|-v|--version)
+            -h|--help|-v|--version|--format|--format=*|-format|-format=*)
                 command envmagic "$@"
                 return $?
                 ;;
@@ -79,7 +81,7 @@ function envmagic
     set -l _envmagic_skip 0
     for _envmagic_arg in $argv
         switch "$_envmagic_arg"
-            case -h --help -v --version
+            case -h --help -v --version --format '--format=*' -format '-format=*'
                 command envmagic $argv
                 return $status
         end
@@ -115,4 +117,58 @@ function envmagic
         end
     end
 end
+`
+
+const shellInitPwsh = `# envmagic shell integration - load with: envmagic shell-init pwsh | Out-String | Invoke-Expression
+function envmagic {
+    $argv = @(foreach ($a in $args) { foreach ($e in $a) { if ($null -ne $e) { "$e" } } })
+    $binary = (Get-Command envmagic -CommandType Application | Select-Object -First 1).Source
+    $command = ''
+    $positional = 0
+    $skip = $false
+    foreach ($arg in $argv) {
+        if ($arg -cin '-h', '--help', '-v', '--version', '--format', '-format', '--%' -or $arg -clike '--format=*' -or $arg -clike '-format=*') {
+            & $binary @argv
+            return
+        }
+        if ($skip) {
+            $skip = $false
+            continue
+        }
+        if ($arg -cin '-n', '--namespace') {
+            $skip = $true
+        } elseif ($arg -notlike '-*') {
+            if ($positional -eq 0) { $command = $arg }
+            $positional++
+        }
+    }
+    if ($command -cne 'load') {
+        & $binary @argv
+        return
+    }
+    $out = & $binary --format pwsh @argv
+    if ($LASTEXITCODE -ne 0) { return }
+    $values = @{}
+    try {
+        foreach ($line in $out) {
+            if ($line -ceq '') { continue }
+            if ($line -cnotmatch '^\$env:([A-Z_][A-Z0-9_]*) = \[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\(''([A-Za-z0-9+/]*={0,2})''\)\)$') {
+                throw 'unexpected load output'
+            }
+            $values[$Matches[1]] = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[2]))
+        }
+    } catch {
+        [Console]::Error.WriteLine('envmagic: unexpected load output; nothing was set')
+        $global:LASTEXITCODE = 1
+        return
+    }
+    if ($values.Count -gt 0) {
+        foreach ($name in $values.Keys) {
+            Set-Item -LiteralPath "Env:$name" -Value $values[$name]
+        }
+        if ($positional -eq 1) {
+            [Console]::Error.WriteLine('envmagic: environment variables set')
+        }
+    }
+}
 `
