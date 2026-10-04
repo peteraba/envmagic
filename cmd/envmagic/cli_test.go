@@ -169,13 +169,26 @@ func TestCommandsWithoutKey(t *testing.T) {
 }
 
 func TestKeyLoadErrors(t *testing.T) {
-	for _, kind := range []string{"invalid-length", "directory"} {
+	for _, kind := range []string{"invalid-length", "directory", "no-config-dir"} {
 		for _, args := range [][]string{{"get", "TOKEN"}, {"--yes", "set", "TOKEN", "x"}} {
 			t.Run(kind+"/"+strings.Join(args, " "), func(t *testing.T) {
 				if kind == "directory" && runtime.GOOS == "windows" {
 					t.Skip("Unix directory read error")
 				}
+				if kind == "no-config-dir" && runtime.GOOS == "windows" {
+					t.Skip("Unix user config directory error")
+				}
 				run := setup(t)
+				if kind == "no-config-dir" {
+					t.Setenv("XDG_CONFIG_HOME", "")
+					t.Setenv("HOME", "")
+					want := "envmagic: load key: failed to get user config dir: "
+					r := run(args...)
+					if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err == nil || !strings.HasPrefix(r.err.Error(), want) {
+						t.Errorf("result=%+v; want exit 1 and error starting with %q", r, want)
+					}
+					return
+				}
 				path, err := internal.KeyPath()
 				if err != nil {
 					t.Fatal(err)
