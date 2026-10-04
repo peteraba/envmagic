@@ -129,6 +129,77 @@ func TestLoadOrCreateKeyPublishRace(t *testing.T) {
 	assertKeyFile(t, path, want)
 }
 
+func TestCreateKeyTempRemovalFailure(t *testing.T) {
+	for _, published := range []bool{true, false} {
+		t.Run(map[bool]string{true: "after-publish", false: "before-publish"}[published], func(t *testing.T) {
+			path := isolateKeyPath(t)
+			want := bytes.Repeat([]byte{1}, 32)
+			key, created, err := createKey(path, want, func(tmp, path string) error {
+				var linkErr error = syscall.EIO
+				if published {
+					linkErr = os.Link(tmp, path)
+				}
+				// A non-empty directory in place of the temp file makes its removal fail on every OS.
+				if err := os.Remove(tmp); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(tmp, "busy"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return linkErr
+			})
+			if published {
+				if err != nil || !created || !bytes.Equal(key, want) {
+					t.Fatalf("key=%x created=%t err=%v, want published key %x", key, created, err, want)
+				}
+				if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("key on disk=%x err=%v, want=%x", got, err, want)
+				}
+			} else if !errors.Is(err, syscall.EIO) || created || key != nil || !strings.Contains(err.Error(), "failed to remove temporary key file") {
+				t.Fatalf("key=%x created=%t err=%v, want publish and removal errors", key, created, err)
+			}
+		})
+	}
+}
+
+func TestLoadOrCreateKeyDanglingSymlink(t *testing.T) {
+	path := isolateKeyPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(filepath.Dir(path), "target")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	key, created, err := LoadOrCreateKey()
+	if err == nil || !strings.Contains(err.Error(), "failed to write key file") || created || key != nil {
+		t.Fatalf("key=%x created=%t err=%v, want write error without following the symlink", key, created, err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink target was created: err=%v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(path)); err != nil || len(entries) != 1 {
+		t.Fatalf("leftover files: entries=%v err=%v, want only the symlink", entries, err)
+	}
+}
+
+func TestWriteNewKeyWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod needs write access to the handle on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNewKey(f, bytes.Repeat([]byte{1}, 32)); err == nil || !strings.Contains(err.Error(), "failed to write key file") {
+		t.Fatalf("writeNewKey error=%v, want write error", err)
+	}
+}
+
 func TestLoadOrCreateKeyLinkFailures(t *testing.T) {
 	type linkCase struct {
 		name     string

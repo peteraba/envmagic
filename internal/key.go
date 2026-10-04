@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 )
@@ -98,79 +97,81 @@ func LoadOrCreateKey() ([]byte, bool, error) {
 	return createKey(p, key, os.Link)
 }
 
-func createKey(path string, key []byte, link func(string, string) error) (result []byte, created bool, err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, false, fmt.Errorf("failed to create key file directory %s: %w", filepath.Dir(path), err)
+func createKey(path string, key []byte, link func(string, string) error) ([]byte, bool, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, fmt.Errorf("failed to create key file directory %s: %w", dir, err)
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".key-*")
+	f, err := os.CreateTemp(dir, ".key-*")
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to create temporary key file %s: %w", path, err)
 	}
-	defer func() {
-		if removeErr := os.Remove(f.Name()); removeErr != nil {
-			result, created = nil, false
-			err = errors.Join(err, fmt.Errorf("failed to remove temporary key file %s: %w", f.Name(), removeErr))
-		}
-	}()
-	if err := writeNewKey(f, key); err != nil {
-		return nil, false, err
-	}
-
-	if err := link(f.Name(), path); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			key, err := LoadKey(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, false, fmt.Errorf("failed to write key file %s: %w", path, err)
-			}
-			return key, false, err
-		}
-		if !keyLinkUnsupported(err) {
-			return nil, false, fmt.Errorf("failed to publish key file %s: %w", path, err)
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if errors.Is(err, os.ErrExist) {
-			key, err := LoadKey(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, false, fmt.Errorf("failed to write key file %s: %w", path, err)
-			}
-			return key, false, err
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("failed to create key file %s: %w", path, err)
-		}
-		if err := writeNewKey(f, key); err != nil {
-			if removeErr := os.Remove(path); removeErr != nil {
-				err = errors.Join(err, fmt.Errorf("failed to remove key file %s: %w", path, removeErr))
-			}
-			return nil, false, err
+	tmp := f.Name()
+	if err = writeNewKey(f, key); err == nil {
+		err = link(tmp, path)
+		switch {
+		case err == nil, errors.Is(err, os.ErrExist):
+		case keyLinkUnsupported(err):
+			err = createExclusive(path, key)
+		default:
+			err = fmt.Errorf("failed to publish key file %s: %w", path, err)
 		}
 	}
-	return key, true, nil
+	removeErr := os.Remove(tmp)
+	if err == nil {
+		// ponytail: the key is published, so an unremovable temp file (e.g. still open elsewhere on Windows) is a harmless stale .key-* file.
+		return key, true, nil
+	}
+	key = nil
+	if errors.Is(err, os.ErrExist) {
+		key, err = LoadKey(path)
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("failed to write key file %s: %w", path, err)
+		}
+	}
+	if removeErr != nil {
+		return nil, false, errors.Join(err, fmt.Errorf("failed to remove temporary key file %s: %w", tmp, removeErr))
+	}
+	return key, false, err
 }
 
-func writeNewKey(f *os.File, key []byte) error {
-	defer func() { _ = f.Close() }()
-	if err := f.Chmod(0o600); err != nil {
-		return fmt.Errorf("failed to set key file permissions %s: %w", f.Name(), err)
+func createExclusive(path string, key []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create key file %s: %w", path, err)
 	}
-	if _, err := f.Write(key); err != nil {
-		return fmt.Errorf("failed to write key file %s: %w", f.Name(), err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("failed to sync key file %s: %w", f.Name(), err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("failed to close key file %s: %w", f.Name(), err)
+	if err := writeNewKey(f, key); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to remove key file %s: %w", path, removeErr))
+		}
+		return err
 	}
 	return nil
 }
 
+func writeNewKey(f *os.File, key []byte) error {
+	// ponytail: Sync/Close failures and createExclusive's cleanup after a failed write lack tests; they need a fault-injecting filesystem.
+	var err error
+	if err = f.Chmod(0o600); err != nil {
+		err = fmt.Errorf("failed to set key file permissions %s: %w", f.Name(), err)
+	} else if _, err = f.Write(key); err != nil {
+		err = fmt.Errorf("failed to write key file %s: %w", f.Name(), err)
+	} else if err = f.Sync(); err != nil {
+		err = fmt.Errorf("failed to sync key file %s: %w", f.Name(), err)
+	}
+	if closeErr := f.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("failed to close key file %s: %w", f.Name(), closeErr)
+	}
+	return err
+}
+
 func keyLinkUnsupported(err error) bool {
-	// Win32 codes are distinct from syscall's POSIX compatibility constants.
+	// Raw Win32 codes, distinct from syscall's POSIX constants on Windows. Safe on every OS:
+	// on Unix, Errno(1) is EPERM (already a fallback) and Errno(17) is EEXIST, which createKey checks first.
 	const (
 		errorInvalidFunction = syscall.Errno(1)
 		errorNotSameDevice   = syscall.Errno(17)
 	)
 	return errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EXDEV) ||
-		(runtime.GOOS == "windows" && (errors.Is(err, errorInvalidFunction) || errors.Is(err, errorNotSameDevice)))
+		errors.Is(err, errorInvalidFunction) || errors.Is(err, errorNotSameDevice)
 }
