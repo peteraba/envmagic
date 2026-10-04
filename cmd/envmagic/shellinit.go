@@ -121,13 +121,14 @@ end
 
 const shellInitPwsh = `# envmagic shell integration - load with: envmagic shell-init pwsh | Out-String | Invoke-Expression
 function envmagic {
+    $argv = @($args | ForEach-Object { $_ })
     $binary = (Get-Command envmagic -CommandType Application | Select-Object -First 1).Source
     $command = ''
     $positional = 0
     $skip = $false
-    foreach ($arg in $args) {
+    foreach ($arg in $argv) {
         if ($arg -cin '-h', '--help', '-v', '--version', '--format', '-format' -or $arg -clike '--format=*' -or $arg -clike '-format=*') {
-            & $binary @args
+            & $binary @argv
             return
         }
         if ($skip) {
@@ -142,12 +143,11 @@ function envmagic {
         }
     }
     if ($command -cne 'load') {
-        & $binary @args
+        & $binary @argv
         return
     }
-    $out = & $binary --format pwsh @args
-    $rc = $LASTEXITCODE
-    if ($rc -ne 0) { return }
+    $out = & $binary --format pwsh @argv
+    if ($LASTEXITCODE -ne 0) { return }
     if ($out) {
         try {
             Invoke-Expression ($out -join "` + "`n" + `")
