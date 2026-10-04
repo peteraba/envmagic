@@ -585,12 +585,9 @@ func TestHereWriteStore(t *testing.T) {
 }
 
 func TestHereRefusesLocalStore(t *testing.T) {
-	for _, kind := range []string{"foreign", "directory", "dangling", "loop", "device"} {
+	for _, kind := range []string{"foreign", "directory", "dangling", "loop"} {
 		for _, yes := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/yes=%t", kind, yes), func(t *testing.T) {
-				if kind == "device" && runtime.GOOS == "windows" {
-					t.Skip("requires a Unix device file")
-				}
 				run := setup(t)
 				t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
 				if r := run("set", "TOKEN", "parent"); r.code() != 0 {
@@ -630,8 +627,6 @@ func TestHereRefusesLocalStore(t *testing.T) {
 					err = os.Symlink("missing", local)
 				case "loop":
 					err = os.Symlink(".envmagic", local)
-				case "device":
-					err = os.Symlink(os.DevNull, local)
 				}
 				if err != nil {
 					t.Fatal(err)

@@ -481,7 +481,7 @@ func findEnvmagic(start string, warn, here bool) (string, os.FileInfo) {
 	dir := start
 	for {
 		candidate := filepath.Join(dir, ".envmagic")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && (!here || info.Mode().IsRegular()) {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			if uid, known := fileOwner(info); known && uid != currentUID() {
 				if warn {
 					fmt.Fprintf(os.Stderr, "envmagic: skipping %s: owned by uid %d, not by you (uid %d)\n", candidate, uid, currentUID())
