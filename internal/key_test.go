@@ -68,6 +68,28 @@ func TestLoadKeyRejectsAES128Key(t *testing.T) {
 	}
 }
 
+func TestWriteKeyReplacesLongFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Repeat([]byte{2}, 32)
+	if err := WriteKey(path, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("key=%x err=%v, want=%x", got, err, want)
+	}
+}
+
+func TestWriteKeyTruncateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key")
+	setupKeyFIFO(t, path)
+	if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err == nil || !strings.Contains(err.Error(), "failed to truncate key file") {
+		t.Fatalf("WriteKey error=%v, want truncate error", err)
+	}
+}
+
 func TestWriteKeyPermissions(t *testing.T) {
 	permissiveUmask(t)
 	path := filepath.Join(t.TempDir(), "envmagic", "key")
@@ -116,6 +138,7 @@ func TestWriteKeyChmodFailure(t *testing.T) {
 	if err := os.Symlink("/dev/null", path); err != nil {
 		t.Fatal(err)
 	}
+	// Ordering is bound by ftruncate(/dev/null) failing with EINVAL; the untouched check alone is weak.
 	if err := WriteKey(path, bytes.Repeat([]byte{1}, 32)); err == nil || !strings.Contains(err.Error(), "failed to set key file permissions") {
 		t.Fatalf("WriteKey error=%v, want permission error", err)
 	}

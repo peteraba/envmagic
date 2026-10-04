@@ -568,7 +568,8 @@ func promptYesNo(prompt string) (bool, error) {
 }
 
 // loadKey loads or creates the user's encryption key; when a new key file is
-// created, backup instructions are printed to stderr.
+// created, backup instructions are printed to stderr. It also warns on stderr
+// when the key file permissions allow access by other users.
 func loadKey() ([]byte, error) {
 	path, err := internal.KeyPath()
 	if err != nil {

@@ -38,6 +38,7 @@ func LoadKey(path string) ([]byte, error) {
 
 // WriteKey writes the key with owner-only permissions, creating its directory if needed.
 func WriteKey(path string, key []byte) error {
+	// ponytail: write/close error checks and absence of O_TRUNC lack tests; need a short-write/RLIMIT fixture or a writable regular file the user cannot chmod.
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("failed to create key file directory %s: %w", filepath.Dir(path), err)
 	}
