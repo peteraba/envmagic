@@ -142,40 +142,57 @@ func TestOpenStoreRejectsForeignOwnerAfterCreate(t *testing.T) {
 }
 
 func TestOpenStoreRejectsForeignOwnerAfterOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".envmagic")
-	store, err := OpenStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	originalOwner, originalUID := fileOwner, currentUID
-	t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
-	currentUID = func() int { return 1000 }
-	checks := 0
-	fileOwner = func(info os.FileInfo) (int, bool) {
-		checks++
-		storeInfo, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if checks == 2 && os.SameFile(info, storeInfo) {
-			return 1001, true
-		}
-		return 1000, true
-	}
-	store, err = OpenStore(path)
-	if store != nil {
-		_ = store.Close()
-		t.Fatal("OpenStore returned a foreign-owned store after opening")
-	}
-	want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid 1000); refusing to open", path)
-	if err == nil || err.Error() != want {
-		t.Fatalf("OpenStore: err=%v, want %q", err, want)
-	}
-	if checks != 2 {
-		t.Fatalf("owner checks=%d, want 2", checks)
+	for _, name := range []string{"direct", "symlink"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ".envmagic")
+			target := path
+			if name == "symlink" {
+				target = filepath.Join(dir, "target")
+			}
+			store, err := OpenStore(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if name == "symlink" {
+				if err := os.Symlink(target, path); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			originalOwner, originalUID := fileOwner, currentUID
+			t.Cleanup(func() { fileOwner, currentUID = originalOwner, originalUID })
+			currentUID = func() int { return 1000 }
+			checks := 0
+			fileOwner = func(info os.FileInfo) (int, bool) {
+				checks++
+				storeInfo, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if checks == 2 && os.SameFile(info, storeInfo) {
+					return 1001, true
+				}
+				return 1000, true
+			}
+			store, err = OpenStore(path)
+			if store != nil {
+				_ = store.Close()
+				t.Fatal("OpenStore returned a foreign-owned store after opening")
+			}
+			want := fmt.Sprintf("store %s is owned by uid 1001, not by you (uid 1000); refusing to open", path)
+			if err == nil || err.Error() != want {
+				t.Fatalf("OpenStore: err=%v, want %q", err, want)
+			}
+			if checks != 2 {
+				t.Fatalf("owner checks=%d, want 2", checks)
+			}
+		})
 	}
 }
 
