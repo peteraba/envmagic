@@ -1,6 +1,6 @@
 module github.com/peteraba/envmagic
 
-go 1.26.3
+go 1.26.0
 
 require (
 	github.com/charmbracelet/huh v1.0.0

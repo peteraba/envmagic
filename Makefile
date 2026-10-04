@@ -1,5 +1,4 @@
 BINARY  := envmagic
-GOBIN   := $(shell go env GOPATH)/bin
 
 .PHONY: build install install-tools lint test version tag release
 

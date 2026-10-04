@@ -21,7 +21,7 @@ them into the current shell when you need them.
 
 Download prebuilt archives for Linux, macOS and Windows from the
 [GitHub releases page](https://github.com/peteraba/envmagic/releases),
-or install from source with Go 1.26.3+:
+or install from source with Go 1.26.0+:
 
 ```sh
 go install github.com/peteraba/envmagic/cmd/envmagic@latest
