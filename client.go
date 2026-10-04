@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/peteraba/envmagic/internal"
 )
@@ -107,22 +108,30 @@ func (c *Client) Get(namespace, name string) (string, error) {
 }
 
 // Load decrypts all variables in namespace and sets them as environment
-// variables in the current process via os.Setenv.
-// It returns the names it loaded.
+// variables in the current process via os.Setenv, overriding existing variables
+// of the same name. It returns the names it loaded. On error, it sets nothing.
 func (c *Client) Load(namespace string) ([]string, error) {
 	entries, err := c.s.GetAll(namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all entries: %w", err)
 	}
 
-	var loaded []string
-	for _, e := range entries {
+	values := make([]string, len(entries))
+	for i, e := range entries {
 		plain, err := internal.Decrypt(c.key, e.Enc, internal.AD(namespace, e.Name))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt %s: %w (wrong key or stored by an older envmagic; re-import it (see README))", e.Name, err)
 		}
 
-		if err := os.Setenv(e.Name, string(plain)); err != nil {
+		if strings.ContainsRune(string(plain), 0) {
+			return nil, fmt.Errorf("value for %s contains a NUL byte", e.Name)
+		}
+		values[i] = string(plain)
+	}
+
+	var loaded []string
+	for i, e := range entries {
+		if err := os.Setenv(e.Name, values[i]); err != nil {
 			return nil, fmt.Errorf("setenv %s: %w", e.Name, err)
 		}
 
