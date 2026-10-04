@@ -81,6 +81,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("store %s contains triggers, views or other schema objects; refusing to open", path)
 	}
 
+	// ponytail: path-based stat allows swaps after open; a full fix needs fstat on SQLite's descriptor.
 	info, err := os.Stat(path)
 	if err != nil {
 		_ = db.Close()

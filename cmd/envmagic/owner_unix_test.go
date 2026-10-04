@@ -182,7 +182,7 @@ func TestOwnerUID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if uid, known := internal.OwnerUID(info); !known || uid != os.Getuid() {
-		t.Errorf("ownerUID=(%d, %t), want (%d, true)", uid, known, os.Getuid())
+		t.Errorf("OwnerUID=(%d, %t), want (%d, true)", uid, known, os.Getuid())
 	}
 }
 
@@ -195,7 +195,7 @@ func TestOwnerUIDRootDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if uid, known := internal.OwnerUID(info); !known || uid != 0 {
-		t.Fatalf("ownerUID(/)=(%d, %t), want (0, true)", uid, known)
+		t.Fatalf("OwnerUID(/)=(%d, %t), want (0, true)", uid, known)
 	}
 }
 
