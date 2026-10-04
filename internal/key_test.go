@@ -117,6 +117,9 @@ func TestLoadOrCreateKeyPublishRace(t *testing.T) {
 	path := isolateKeyPath(t)
 	want := bytes.Repeat([]byte{1}, 32)
 	key, created, err := createKey(path, bytes.Repeat([]byte{2}, 32), func(tmp, path string) error {
+		if filepath.Dir(tmp) != filepath.Dir(path) {
+			t.Errorf("temp file %s is not in the key directory %s", tmp, filepath.Dir(path))
+		}
 		assertKeyFile(t, tmp, bytes.Repeat([]byte{2}, 32))
 		if err := WriteKey(path, want); err != nil {
 			t.Fatal(err)
@@ -127,6 +130,33 @@ func TestLoadOrCreateKeyPublishRace(t *testing.T) {
 		t.Fatalf("key=%x created=%t err=%v, want existing key %x", key, created, err, want)
 	}
 	assertKeyFile(t, path, want)
+}
+
+func TestCreateKeyKeepsExistingKey(t *testing.T) {
+	path := isolateKeyPath(t)
+	want := bytes.Repeat([]byte{1}, 32)
+	if err := WriteKey(path, want); err != nil {
+		t.Fatal(err)
+	}
+	key, created, err := createKey(path, bytes.Repeat([]byte{2}, 32), os.Link)
+	if err != nil || created || !bytes.Equal(key, want) {
+		t.Fatalf("key=%x created=%t err=%v, want existing key %x", key, created, err, want)
+	}
+	assertKeyFile(t, path, want)
+}
+
+func TestLoadOrCreateKeyUnwritableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("requires Unix permission checks as a non-root user")
+	}
+	path := isolateKeyPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	key, created, err := LoadOrCreateKey()
+	if err == nil || !strings.HasPrefix(err.Error(), "failed to write key file "+path+":") || created || key != nil {
+		t.Fatalf("key=%x created=%t err=%v, want write error for %s", key, created, err, path)
+	}
 }
 
 func TestCreateKeyTempRemovalFailure(t *testing.T) {
@@ -321,7 +351,11 @@ func TestLoadOrCreateKeyRejectsInvalidLength(t *testing.T) {
 	if err := os.WriteFile(path, want, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	start := time.Now()
 	key, created, err := LoadOrCreateKey()
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("rejecting a short key took %v, want a bounded wait", elapsed)
+	}
 	if err == nil || !strings.Contains(err.Error(), "invalid length") || created || key != nil {
 		t.Errorf("key=%x created=%t err=%v; want invalid length error without creation", key, created, err)
 	}
@@ -351,6 +385,21 @@ func TestLoadKeyRejectsAES128Key(t *testing.T) {
 	}
 	key, err := LoadKey(path)
 	if err == nil || !strings.Contains(err.Error(), "invalid length 16 (expected 32)") || key != nil {
+		t.Fatalf("key=%x err=%v; want invalid length error and no key", key, err)
+	}
+}
+
+func TestLoadKeyRejectsLongKeyWithoutWaiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 33), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	key, err := LoadKey(path)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("rejecting a long key took %v, want no retry delay", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "invalid length 33 (expected 32)") || key != nil {
 		t.Fatalf("key=%x err=%v; want invalid length error and no key", key, err)
 	}
 }
