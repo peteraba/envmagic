@@ -615,9 +615,10 @@ func TestHereWriteStore(t *testing.T) {
 				}
 				input := setTestStdin(t, inputValue)
 				flags := []string{"--here"}
-				if mode == "yes" {
+				switch mode {
+				case "yes":
 					flags = append(flags, "--yes")
-				} else if mode == "noninteractive" {
+				case "noninteractive":
 					t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
 				}
 				r := run(append(flags, args...)...)
@@ -1797,6 +1798,9 @@ func TestShellInit(t *testing.T) {
 
 func TestShellWrapper(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("bash is required in CI")
+		}
 		t.Skip("bash is not on PATH")
 	}
 	binDir := t.TempDir()
@@ -1827,6 +1831,9 @@ func TestShellWrapper(t *testing.T) {
 		t.Run(shell, func(t *testing.T) {
 			path, err := exec.LookPath(shell)
 			if err != nil {
+				if os.Getenv("CI") != "" {
+					t.Fatalf("%s is required in CI", shell)
+				}
 				t.Skip(shell + " is not on PATH")
 			}
 			run := setup(t)
