@@ -1447,6 +1447,15 @@ func TestRawByteRoundTrips(t *testing.T) {
 		if r := run("-n", "bytes", "export", path); r.code() != 0 {
 			t.Fatal(r.err)
 		}
+		exported, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range []string{`BYTE_009="\t"`, `BYTE_013="\r"`, `BYTE_036="\$"`, "BYTE_096=\"\\`\""} {
+			if !strings.Contains("\n"+string(exported), "\n"+line+"\n") {
+				t.Errorf("export missing line %q", line)
+			}
+		}
 		if r := run("-n", "imported", "import", path); r.code() != 0 {
 			t.Fatal(r.err)
 		}
@@ -1472,9 +1481,9 @@ func TestRawByteRoundTrips(t *testing.T) {
 			fmt.Fprintf(&script, "printf %%s \"$BYTE_%03d\"\n", i)
 			want = append(want, byte(i))
 		}
-		out, err := exec.Command(bash, "--noprofile", "--norc", "-c", script.String()).Output()
+		out, err := exec.Command(bash, "--noprofile", "--norc", "-c", script.String()).CombinedOutput()
 		if err != nil || !bytes.Equal(out, want) {
-			t.Fatalf("load: stdout=%q err=%v, want %q", out, err, want)
+			t.Fatalf("load: combined output=%q err=%v, want %q", out, err, want)
 		}
 	})
 }
