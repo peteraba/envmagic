@@ -58,6 +58,17 @@ func newApp() *cli.Command {
 		},
 		Flags: []cli.Flag{
 			&cli.StringFlag{
+				Name:  "format",
+				Value: "posix",
+				Usage: "load output format: posix (default) or pwsh",
+				Action: func(_ context.Context, _ *cli.Command, format string) error {
+					if format != "posix" && format != "pwsh" {
+						return cli.Exit(fmt.Sprintf("envmagic: invalid format %q (expected posix or pwsh)", format), 2)
+					}
+					return nil
+				},
+			},
+			&cli.StringFlag{
 				Name:    "namespace",
 				Aliases: []string{"n"},
 				Value:   envmagic.DefaultNamespace,
@@ -137,8 +148,8 @@ func newApp() *cli.Command {
 			},
 			{
 				Name:      "shell-init",
-				Usage:     "print shell integration for bash, zsh, or fish",
-				ArgsUsage: "<bash|zsh|fish>",
+				Usage:     "print shell integration for bash, zsh, fish, or pwsh",
+				ArgsUsage: "<bash|zsh|fish|pwsh>",
 				Action:    cmdShellInit,
 			},
 			{
@@ -223,7 +234,7 @@ func cmdDefault(_ context.Context, cmd *cli.Command) error {
 
 	if cmd.NArg() == 0 {
 		if cmd.Name == "load" {
-			return runSourceAll(ns, debug)
+			return runSourceAll(ns, debug, cmd.String("format"))
 		}
 		return cli.ShowRootCommandHelp(cmd)
 	}
@@ -377,7 +388,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 		if err := checkValue(name, line); err != nil {
 			return err
 		}
-		line = fmt.Sprintf("export %s=%s", name, shellQuote(line))
+		line = loadAssignment(name, line, cmd.String("format"))
 		if cmd.Bool("debug") {
 			fmt.Fprintln(os.Stderr, line)
 		}
@@ -387,7 +398,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 	return nil
 }
 
-func runSourceAll(namespace string, debug bool) error {
+func runSourceAll(namespace string, debug bool, format string) error {
 	s, key, _, err := openActiveStore(true)
 	if err != nil {
 		return err
@@ -409,10 +420,10 @@ func runSourceAll(namespace string, debug bool) error {
 			return err
 		}
 		ending := "\n"
-		if i < len(entries)-1 {
+		if format != "pwsh" && i < len(entries)-1 {
 			ending = " &&\n"
 		}
-		fmt.Fprintf(&output, "export %s=%s%s", e.Name, shellQuote(string(plain)), ending)
+		fmt.Fprint(&output, loadAssignment(e.Name, string(plain), format), ending)
 	}
 	fmt.Print(output.String())
 	if debug {
@@ -420,6 +431,21 @@ func runSourceAll(namespace string, debug bool) error {
 	}
 
 	return nil
+}
+
+var pwshSingleQuoteReplacer = strings.NewReplacer(
+	"'", "''",
+	"‘", "‘‘",
+	"’", "’’",
+	"‚", "‚‚",
+	"‛", "‛‛",
+)
+
+func loadAssignment(name, value, format string) string {
+	if format == "pwsh" {
+		return fmt.Sprintf("$env:%s = '%s'", name, pwshSingleQuoteReplacer.Replace(value))
+	}
+	return fmt.Sprintf("export %s=%s", name, shellQuote(value))
 }
 
 func checkValue(name, value string) error {

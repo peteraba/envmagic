@@ -1406,6 +1406,8 @@ func TestEmitRejectsStoredNUL(t *testing.T) {
 		{"load", "Z_BAD"},
 		{"--debug", "load"},
 		{"--debug", "load", "Z_BAD"},
+		{"--format", "pwsh", "load"},
+		{"--format", "pwsh", "--debug", "load", "Z_BAD"},
 		{"export"},
 	} {
 		r := run(args...)
@@ -1909,7 +1911,13 @@ func TestShellInit(t *testing.T) {
 		}
 	}
 
-	r := run("shell-init", "powershell")
+	pwsh := run("shell-init", "pwsh")
+	powershell := run("shell-init", "powershell")
+	if pwsh.code() != 0 || pwsh.stdout != shellInitPwsh || powershell.code() != 0 || powershell.stdout != pwsh.stdout {
+		t.Errorf("PowerShell init: pwsh=%+v powershell=%+v", pwsh, powershell)
+	}
+
+	r := run("shell-init", "unknown")
 	if r.code() == 0 {
 		t.Error("unknown shell: expected non-zero exit")
 	}
@@ -1927,20 +1935,16 @@ func TestShellWrapper(t *testing.T) {
 		}
 		t.Skip("bash is not on PATH")
 	}
-	binDir := t.TempDir()
-	build := exec.Command("go", "build", "-o", filepath.Join(binDir, "envmagic"), "./")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build envmagic: %v\n%s", err, out)
-	}
-	help, err := exec.Command(filepath.Join(binDir, "envmagic"), "--help").Output()
+	binary := buildShellBinary(t)
+	help, err := exec.Command(binary, "--help").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadHelp, err := exec.Command(filepath.Join(binDir, "envmagic"), "load", "--help").Output()
+	loadHelp, err := exec.Command(binary, "load", "--help").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", filepath.Dir(binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	hostileHome := t.TempDir()
 	hostileFile := filepath.Join(hostileHome, ".zshenv")
 	if err := os.WriteFile(hostileFile, []byte("envmagic() { echo hijacked; }\n"), 0o600); err != nil {

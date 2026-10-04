@@ -11,15 +11,17 @@ import (
 // cmdShellInit outputs shell code so load forms update the current shell's environment.
 func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	if cmd.NArg() == 0 {
-		return cli.Exit("usage: envmagic shell-init <bash|zsh|fish>", 2)
+		return cli.Exit("usage: envmagic shell-init <bash|zsh|fish|pwsh>", 2)
 	}
 	switch cmd.Args().First() {
 	case "bash", "zsh", "sh":
 		fmt.Print(shellInitPosix)
 	case "fish":
 		fmt.Print(shellInitFish)
+	case "pwsh", "powershell":
+		fmt.Print(shellInitPwsh)
 	default:
-		fmt.Fprintf(os.Stderr, "envmagic: unsupported shell %q (supported: bash, zsh, fish)\n", cmd.Args().First())
+		fmt.Fprintf(os.Stderr, "envmagic: unsupported shell %q (supported: bash, zsh, fish, pwsh)\n", cmd.Args().First())
 		return cli.Exit("", 2)
 	}
 	return nil
@@ -115,4 +117,51 @@ function envmagic
         end
     end
 end
+`
+
+const shellInitPwsh = `# envmagic shell integration - load with: envmagic shell-init pwsh | Out-String | Invoke-Expression
+function envmagic {
+    $binary = (Get-Command envmagic -CommandType Application | Select-Object -First 1).Source
+    $command = ''
+    $positional = 0
+    $skip = $false
+    foreach ($arg in $args) {
+        if ($arg -cin '-h', '--help', '-v', '--version') {
+            & $binary @args
+            $global:LASTEXITCODE = $LASTEXITCODE
+            return
+        }
+        if ($skip) {
+            $skip = $false
+            continue
+        }
+        if ($arg -cin '-n', '--namespace') {
+            $skip = $true
+        } elseif ($arg -notlike '-*') {
+            if ($positional -eq 0) { $command = $arg }
+            $positional++
+        }
+    }
+    if ($command -cne 'load') {
+        & $binary @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+        return
+    }
+    $out = & $binary --format pwsh @args
+    $rc = $LASTEXITCODE
+    $global:LASTEXITCODE = $rc
+    if ($rc -ne 0) { return }
+    if ($out) {
+        try {
+            Invoke-Expression ($out -join "` + "`n" + `") -ErrorAction Stop
+        } catch {
+            Write-Error $_ -ErrorAction Continue
+            $global:LASTEXITCODE = 1
+            return
+        }
+        if ($positional -eq 1) {
+            [Console]::Error.WriteLine('envmagic: environment variables set')
+        }
+    }
+}
 `

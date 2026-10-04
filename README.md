@@ -44,8 +44,16 @@ eval "$(envmagic shell-init zsh)"
 envmagic shell-init fish | source
 ```
 
+For PowerShell, add this to `$PROFILE`:
+
+```powershell
+envmagic shell-init pwsh | Out-String | Invoke-Expression
+```
+
 Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
 statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
+Use `envmagic --format pwsh load [NAME]` to print PowerShell `$env:NAME = '…'`
+assignments; apply them with `envmagic --format pwsh load | Out-String | Invoke-Expression`.
 `envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
 Bare `envmagic` shows help. `--debug` echoes only load exports to stderr.
 
@@ -159,7 +167,7 @@ After all stores and namespaces are re-imported successfully, delete `envmagic-o
 | `envmagic [-n NS] import --empty [FILE]` | Store empty values, ignoring template defaults                   |
 | `envmagic key`                           | Show the key file path and base64-encoded content                |
 | `envmagic key --set <base64>`            | Restore the key from a base64 string                             |
-| `envmagic shell-init <bash\|zsh\|fish>`  | Print shell integration to eval                                  |
+| `envmagic shell-init <bash\|zsh\|fish\|pwsh>` | Print shell integration to eval                               |
 | `envmagic help`                          | Show help                                                        |
 | `envmagic --version`                     | Show version                                                     |
 
