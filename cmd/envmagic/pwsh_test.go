@@ -273,6 +273,16 @@ func main() {
     case "bad base64":
         fmt.Println("$env:NAME = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('ZXZhbHVhdGVk'))")
         fmt.Println("$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('a'))")
+    case "leading character":
+        fmt.Println("x$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YQ=='))")
+    case "trailing character":
+        fmt.Println("$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YQ=='))x")
+    case "uppercase ENV":
+        fmt.Println("$ENV:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YQ=='))")
+    case "lowercase name":
+        fmt.Println("$env:x = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YQ=='))")
+    case "invalid name":
+        fmt.Println("$env:X-Y = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YQ=='))")
     default:
         fmt.Println("throw 'eval failed'")
     }
@@ -296,11 +306,16 @@ func main() {
 			{"mixed", "0", "", "mixed"},
 			{"posix", "0", "", "posix"},
 			{"bad base64", "0", "", "bad base64"},
+			{"leading character", "0", "", "leading character"},
+			{"trailing character", "0", "", "trailing character"},
+			{"uppercase ENV", "0", "", "uppercase ENV"},
+			{"lowercase name", "0", "", "lowercase name"},
+			{"invalid name", "0", "", "invalid name"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Setenv("ENVMAGIC_TEST_FAIL", tc.fail)
 				t.Setenv("ENVMAGIC_TEST_OUTPUT", tc.output)
-				cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", tc.prefix+shellInitPwsh+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; $env:NAME = 'before'; envmagic load; if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'unexpected output applied' }; [Console]::Out.Write("$LASTEXITCODE/$env:NAME")`)
+				cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", tc.prefix+shellInitPwsh+`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; $env:X = 'before'; $env:NAME = 'before'; envmagic load; if ($env:X -cne 'before' -or (Test-Path Env:PWNED)) { throw 'unexpected output applied' }; [Console]::Out.Write("$LASTEXITCODE/$env:NAME")`)
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
 				out, err := cmd.Output()
