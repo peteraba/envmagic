@@ -138,6 +138,11 @@ func TestShellWrapperPwsh(t *testing.T) {
 	multiline := "-----BEGIN KEY-----\n  abc\ndef\n-----END KEY-----\n"
 	for _, args := range [][]string{
 		{"set", "NAME", value},
+		{"set", "VERSION", "Set-Item Env:PWNED 1"},
+		{"set", "HELP", "Set-Item Env:PWNED 1"},
+		{"set", "H", "h value"},
+		{"-n", "x", "set", "PWNED", "Set-Item Env:PWNED 1"},
+		{"-n", "-debug", "set", "NAME", "flag namespace"},
 		{"set", "EMPTY", ""},
 		{"set", "LOAD", "Write-Output LOAD_DATA"},
 		{"-n", "--help", "set", "X", "help namespace"},
@@ -153,6 +158,35 @@ func TestShellWrapperPwsh(t *testing.T) {
 		}
 	}
 	init := "envmagic shell-init pwsh | Out-String | Invoke-Expression\n"
+	for _, args := range wrapperLoadArgs {
+		t.Run("args "+args, func(t *testing.T) {
+			commandArgs := args
+			if args == "load --" {
+				commandArgs = "load '--'"
+			}
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; $env:VERSION = 'before'; $env:HELP = 'before'; envmagic `+commandArgs+`; $code = $LASTEXITCODE; if ($env:VERSION -cne 'before' -or $env:HELP -cne 'before' -or (Test-Path Env:PWNED)) { throw 'unexpected output applied' }; exit $code`)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			flag := strings.Fields(strings.TrimPrefix(args, "load "))[0]
+			wantCode := 2
+			wantOut := ""
+			wantErr := "envmagic: load accepts only -n/--namespace (got " + flag + ")\n"
+			if args == "--n x load" || args == "-namespace x load" {
+				wantCode = 0
+				wantOut = "export PWNED=\"Set-Item Env:PWNED 1\"\n"
+				wantErr = ""
+			}
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != wantCode || string(out) != wantOut || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != wantErr {
+				t.Errorf("err=%v stdout=%q stderr=%q wantErr=%q", err, out, stderr.String(), wantErr)
+			}
+			for _, name := range []string{"VERSION", "HELP"} {
+				if r := run("get", name); r.code() != 0 || r.stdout != "Set-Item Env:PWNED 1\n" {
+					t.Errorf("%s changed: %+v", name, r)
+				}
+			}
+		})
+	}
 	seedReservedNamespaceY(t, run, loadAssignment("PWNED", "EXECUTED", "pwsh"))
 	if r := run("-n", "x", "set", "Y", loadAssignment("PWNED", "EXECUTED", "pwsh")); r.code() != 0 {
 		t.Fatal(r.err)
@@ -164,7 +198,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
 			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: namespace \"load\" is reserved\n" {
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace (got "+flag+")\n" {
 				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 			}
 		})
@@ -176,7 +210,8 @@ func TestShellWrapperPwsh(t *testing.T) {
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
 			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(out) != 0 || !strings.Contains(stderr.String(), "can't duplicate this flag") {
+			flag := strings.Fields(args)[0]
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace (got "+flag+")\n" {
 				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 			}
 		})
@@ -196,7 +231,10 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic $null load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic @($null) load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic load NAME; [Console]::Out.Write($env:NAME)`, value, ""},
-		{`envmagic load '--' NAME; [Console]::Out.Write($env:NAME)`, value, ""},
+		{`envmagic load help; [Console]::Out.Write($env:HELP)`, "Set-Item Env:PWNED 1", ""},
+		{`envmagic load h; [Console]::Out.Write($env:H)`, "h value", ""},
+		{`envmagic -n -debug load NAME; [Console]::Out.Write($env:NAME)`, "flag namespace", ""},
+		{`envmagic --namespace -debug load NAME; [Console]::Out.Write($env:NAME)`, "flag namespace", ""},
 		{`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write($env:X)`, quoteInjection, confirm},
 		{`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic -n security load X; if (Test-Path Env:PWNED) { throw 'stored value executed' }; [Console]::Out.Write($env:X)`, quoteInjection, ""},
 		{`envmagic -n multiline load; [Console]::Out.Write($env:NAME)`, multiline, confirm},
@@ -204,15 +242,19 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic -n staging load; [Console]::Out.Write($env:NAME + '/' + $env:OTHER)`, "staging value/second value", confirm},
 		{`envmagic --namespace staging load; [Console]::Out.Write($env:NAME)`, "staging value", confirm},
 		{`envmagic --namespace=staging load; [Console]::Out.Write($env:NAME)`, "staging value", confirm},
+		{`envmagic -n=staging load; [Console]::Out.Write($env:NAME)`, "staging value", confirm},
 		{`envmagic load -n staging; [Console]::Out.Write($env:NAME)`, "staging value", confirm},
+		{`envmagic load NAME -n staging; [Console]::Out.Write($env:NAME)`, "staging value", ""},
 		{`envmagic -n staging load NAME; [Console]::Out.Write($env:NAME)`, "staging value", ""},
 		{`envmagic -n empty load; [Console]::Out.Write($LASTEXITCODE)`, "0", ""},
 		{`envmagic get NAME`, value + "\n", ""},
+		{`envmagic --debug get NAME`, value + "\n", ""},
 		{`envmagic get MISSING; [Console]::Out.Write($LASTEXITCODE)`, "1", "envmagic: MISSING not found in namespace \"default\"\n"},
 		{`$env:NAME = 'before'; envmagic load MISSING; [Console]::Out.Write("$LASTEXITCODE/$env:NAME")`, "1/before", "envmagic: MISSING not found in namespace \"default\"\n"},
 		{`envmagic load A B; [Console]::Out.Write($LASTEXITCODE)`, "2", "usage: envmagic load [-n NS] [NAME]\n"},
 		{`envmagic --help`, string(help), ""},
 		{`envmagic load --help`, string(loadHelp), ""},
+		{`envmagic --debug load --help`, string(loadHelp), ""},
 		{`envmagic load -h`, string(loadHelp), ""},
 		{`envmagic --version load`, "envmagic version v0.5.0\n", ""},
 		{`envmagic -v load`, "envmagic version v0.5.0\n", ""},
@@ -244,9 +286,9 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic -n X load '--%' '--format posix'`, "0", ""},
 		{`envmagic -n X load @('--format','posix')`, "0", ""},
 		{`$f = '--format','posix'; envmagic -n X load $f`, "0", ""},
-		{`envmagic -n X load (,@('--format','posix'))`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
-		{`envmagic -n X @('load',@('--format','posix'))`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
-		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "1", "Incorrect Usage: flag provided but not defined: -format posix\n"},
+		{`envmagic -n X load (,@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
+		{`envmagic -n X @('load',@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
+		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
 	} {
 		t.Run("format "+tc.command, func(t *testing.T) {
 			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+tc.command+"\n"+`if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }; [Console]::Out.Write($LASTEXITCODE)`)
