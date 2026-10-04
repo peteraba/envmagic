@@ -79,6 +79,7 @@ Values are encrypted with AES-256-GCM using a per-user 32-byte key, shared
 across projects and generated on first use with mode `0600`. On Linux, it lives
 at `$XDG_CONFIG_HOME/envmagic/key` (typically `~/.config/envmagic/key`);
 other platforms use their user config directory.
+When the key is created, envmagic prints it to stderr only if stderr is a terminal; otherwise it prints the path and a hint to run `envmagic key`.
 **If this key is lost or replaced, existing values cannot be decrypted.**
 
 Names and namespaces are stored in plaintext; `list` reveals names, not values,

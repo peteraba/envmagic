@@ -2041,6 +2041,56 @@ func TestImportCreatesStoreWithEnvNonInteractive(t *testing.T) {
 	}
 }
 
+func TestNewEncryptionKeyOutput(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		name := "non-terminal"
+		if terminal {
+			name = "terminal"
+		}
+		t.Run(name, func(t *testing.T) {
+			run := setupBare(t)
+			if terminal {
+				original := stderrIsTerminal
+				stderrIsTerminal = func() bool { return true }
+				t.Cleanup(func() { stderrIsTerminal = original })
+			}
+
+			r := run("--yes", "set", "TOKEN", "secret")
+			if r.code() != 0 {
+				t.Fatalf("set: exit=%d stderr=%q", r.code(), r.stderr)
+			}
+			path, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded := base64.StdEncoding.EncodeToString(key)
+			if !terminal && (strings.Contains(r.stdout, encoded) || strings.Contains(r.stderr, encoded)) {
+				t.Error("key leaked into non-terminal output")
+			}
+			want := fmt.Sprintf("envmagic: generated new encryption key at %s\n", path)
+			if terminal {
+				want += fmt.Sprintf("envmagic: key (base64): %s\n", encoded)
+				want += "envmagic: You can display the key again later by running `envmagic key`.\n"
+			} else {
+				want += "envmagic: run `envmagic key` on a terminal to see the key\n"
+			}
+			want += "envmagic: BACK THIS FILE UP - without it, stored values cannot be decrypted.\n"
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want += fmt.Sprintf("envmagic: stored TOKEN (namespace %q) in %s\n", "default", filepath.Join(cwd, ".envmagic"))
+			if r.stdout != "" || r.stderr != want {
+				t.Errorf("set: stdout=%q stderr=%q, want empty stdout and stderr=%q", r.stdout, r.stderr, want)
+			}
+		})
+	}
+}
+
 func TestSetCreatesStoreWithYes(t *testing.T) {
 	for _, args := range [][]string{
 		{"--yes", "foo_key", "bar"},
