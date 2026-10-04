@@ -44,6 +44,9 @@ func WriteKey(path string, key []byte) error {
 	if err := os.WriteFile(path, key, 0o600); err != nil {
 		return fmt.Errorf("failed to write key file %s: %w", path, err)
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("failed to set key file permissions %s: %w", path, err)
+	}
 	return nil
 }
 

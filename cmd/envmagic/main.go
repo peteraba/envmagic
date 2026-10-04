@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -579,6 +580,11 @@ func loadKey() ([]byte, error) {
 	}
 	if created {
 		notifyNewEncryptionKey(key, path)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+			fmt.Fprintf(os.Stderr, "envmagic: warning: key file %s is readable by other users (mode %04o); run chmod 600 %s\n", path, info.Mode().Perm(), path)
+		}
 	}
 	return key, nil
 }
