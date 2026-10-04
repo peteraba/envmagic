@@ -185,6 +185,7 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 	var result [][2]string
 
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 16<<20)
 
 	lineNum := 0
 	for sc.Scan() {
@@ -220,7 +221,10 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 		result = append(result, [2]string{name, val})
 	}
 
-	return result, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("line %d: %w", lineNum+1, err)
+	}
+	return result, nil
 }
 
 func parseDotenvValue(raw string) (string, error) {
