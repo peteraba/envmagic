@@ -83,6 +83,8 @@ The library refuses to open stores owned by another user on Unix.
 If none exists, `set` and `import` offer to create one in the current directory;
 use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt (required when stdin is not a terminal).
 Use `-n NS` to select a namespace; the default is `default`.
+`load` is reserved as a namespace name.
+`-n` may be given only once; an existing namespace named `load` can no longer be used from the CLI.
 PowerShell consumes a bare `--`; quote it when storing a value starting with `-`:
 `envmagic set '--' NAME -value`.
 
