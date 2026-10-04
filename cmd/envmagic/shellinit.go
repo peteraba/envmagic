@@ -102,8 +102,8 @@ function envmagic
         command envmagic $argv
         return $status
     end
-    set -l _envmagic_out (command envmagic $argv)
-    set -l _envmagic_rc $status
+    set -l _envmagic_out (command envmagic $argv | string collect)
+    set -l _envmagic_rc $pipestatus[1]
     if test $_envmagic_rc -ne 0
         return $_envmagic_rc
     end
