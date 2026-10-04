@@ -18,8 +18,15 @@ func TestExportDevFull(t *testing.T) {
 	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
 		t.Fatal(r.err)
 	}
-	if r := run("export", "/dev/full"); r.code() != 1 || r.err == nil || r.stderr != "" {
+	if r := run("export", "/dev/full"); r.code() != 1 || r.err == nil || !strings.Contains(r.err.Error(), "envmagic: write /dev/full:") || r.stderr != "" {
 		t.Errorf("export /dev/full: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
+	}
+	info, err := os.Stat("/dev/full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		t.Errorf("/dev/full mode=%v, want character device", info.Mode())
 	}
 	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
 	if err != nil {

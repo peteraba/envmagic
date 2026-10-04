@@ -32,8 +32,10 @@ func TestExportExistingFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r := run("export", path); r.code() != 0 {
-		t.Fatal(r.err)
+	r := run("export", path)
+	wantStderr := "envmagic: exported 1 variable(s) from namespace \"default\" to " + path + "\n"
+	if r.code() != 0 || r.stderr != wantStderr {
+		t.Fatalf("export: exit=%d stderr=%q, want %q, err=%v", r.code(), r.stderr, wantStderr, r.err)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil || string(content) != "TOKEN=\"secret\"\n" {
@@ -50,7 +52,7 @@ func TestExportExistingFile(t *testing.T) {
 }
 
 func TestExportRefusesStore(t *testing.T) {
-	for _, path := range []string{".envmagic", "./.envmagic", "store-alias"} {
+	for _, path := range []string{".envmagic", "./.envmagic", "store-alias", "link", "absolute"} {
 		t.Run(path, func(t *testing.T) {
 			run := setup(t)
 			if r := run("set", "TOKEN", "secret"); r.code() != 0 {
@@ -59,6 +61,18 @@ func TestExportRefusesStore(t *testing.T) {
 			if path == "store-alias" {
 				if err := os.Link(".envmagic", path); err != nil {
 					t.Skipf("hard links unavailable: %v", err)
+				}
+			}
+			if path == "link" {
+				if err := os.Symlink(".envmagic", path); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			if path == "absolute" {
+				var err error
+				path, err = filepath.Abs(".envmagic")
+				if err != nil {
+					t.Fatal(err)
 				}
 			}
 			r := run("export", path)
@@ -74,27 +88,54 @@ func TestExportRefusesStore(t *testing.T) {
 }
 
 func TestExportRefusesKey(t *testing.T) {
+	for _, name := range []string{"path", "symlink"} {
+		t.Run(name, func(t *testing.T) {
+			run := setup(t)
+			if r := run("set", "TOKEN", "secret"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			path, err := internal.KeyPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := path
+			if name == "symlink" {
+				target = "key-link"
+				if err := os.Symlink(path, target); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			r := run("export", target)
+			if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err.Error() != "envmagic: refusing to export over the key file "+target {
+				t.Errorf("export: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Errorf("key changed: err=%v", err)
+			}
+			checkNoExportTemps(t, filepath.Dir(path))
+			checkNoExportTemps(t, ".")
+		})
+	}
+}
+
+func TestExportSymlinkLoop(t *testing.T) {
 	run := setup(t)
 	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
 		t.Fatal(r.err)
 	}
-	path, err := internal.KeyPath()
-	if err != nil {
-		t.Fatal(err)
+	if err := os.Symlink("loop", "loop"); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	r := run("export", "loop")
+	if r.code() != 1 || r.err == nil || !strings.Contains(r.err.Error(), "envmagic: stat loop:") || r.stderr != "" {
+		t.Errorf("export: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
 	}
-	r := run("export", path)
-	if r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err.Error() != "envmagic: refusing to export over the key file "+path {
-		t.Errorf("export: exit=%d stdout=%q stderr=%q err=%v", r.code(), r.stdout, r.stderr, r.err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Errorf("key changed: err=%v", err)
-	}
-	checkNoExportTemps(t, filepath.Dir(path))
+	checkNoExportTemps(t, ".")
 }
 
 func TestExportWrongKeyPreservesFile(t *testing.T) {
@@ -130,15 +171,11 @@ func TestExportWrongKeyPreservesFile(t *testing.T) {
 }
 
 func TestExportRenameFailureCleanup(t *testing.T) {
-	run := setup(t)
-	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
-		t.Fatal(r.err)
-	}
 	path := filepath.Join(t.TempDir(), "directory")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	r := run("export", path)
+	r := result{err: writeExportFile(path, "TOKEN=\"secret\"\n")}
 	if r.code() != 1 || !strings.Contains(r.err.Error(), "rename ") || r.stderr != "" {
 		t.Errorf("export: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
 	}

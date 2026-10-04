@@ -68,9 +68,25 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 					return errorf("refusing to export over the %s %s", protected.label, outPath)
 				}
 			}
+			f, err := os.OpenFile(outPath, os.O_WRONLY, 0)
+			if err != nil {
+				return errorf("open %s: %v", outPath, err)
+			}
+			if !target.Mode().IsRegular() {
+				_, err = f.WriteString(output.String())
+			}
+			closeErr := f.Close()
+			if err != nil {
+				return errorf("write %s: %v", outPath, err)
+			}
+			if closeErr != nil {
+				return errorf("close %s: %v", outPath, closeErr)
+			}
 		}
-		if err := writeExportFile(outPath, output.String()); err != nil {
-			return err
+		if target == nil || target.Mode().IsRegular() {
+			if err := writeExportFile(outPath, output.String()); err != nil {
+				return err
+			}
 		}
 	} else if _, err := fmt.Fprint(os.Stdout, output.String()); err != nil {
 		return errorf("write stdout: %v", err)
@@ -88,22 +104,27 @@ func writeExportFile(path, output string) error {
 	if err != nil {
 		return errorf("open %s: %v", path, err)
 	}
+	tempPath := f.Name()
 	defer func() {
 		_ = f.Close()
-		_ = os.Remove(f.Name())
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
 	}()
 	if _, err := f.WriteString(output); err != nil {
 		return errorf("write %s: %v", path, err)
 	}
+	// ponytail: Sync/Close failures are untested; coverage needs a failing filesystem or an injection seam.
 	if err := f.Sync(); err != nil {
 		return errorf("sync %s: %v", path, err)
 	}
 	if err := f.Close(); err != nil {
 		return errorf("close %s: %v", path, err)
 	}
-	if err := os.Rename(f.Name(), path); err != nil {
+	if err := os.Rename(tempPath, path); err != nil {
 		return errorf("rename %s: %v", path, err)
 	}
+	tempPath = ""
 	return nil
 }
 
