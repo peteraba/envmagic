@@ -584,6 +584,33 @@ func TestHereWriteStore(t *testing.T) {
 	}
 }
 
+func TestHereSetStdinIgnoresForeignParent(t *testing.T) {
+	run := setup(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	info, err := os.Stat(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := fileOwner
+	t.Cleanup(func() { fileOwner = original })
+	fileOwner = func(candidate os.FileInfo) (int, bool) {
+		if os.SameFile(info, candidate) {
+			return currentUID() + 1, true
+		}
+		return original(candidate)
+	}
+	if err := os.Mkdir("child", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	setTestStdin(t, "secret\n")
+	r := run("--here", "set", "TOKEN")
+	wantErr := "envmagic: no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store"
+	if r.code() != 1 || r.stderr != "" || r.err.Error() != wantErr {
+		t.Fatalf("write: %+v; want stderr=%q err=%q", r, "", wantErr)
+	}
+}
+
 func TestHereRefusesLocalStore(t *testing.T) {
 	for _, kind := range []string{"foreign", "directory", "dangling", "loop"} {
 		for _, yes := range []bool{false, true} {
