@@ -89,7 +89,8 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		}
 		// ponytail: In-place writes leave the target truncated on failure (e.g. disk full);
 		// temp+rename avoids that but breaks FIFOs, /dev/stdout, hard links and file ownership.
-		// Close errors are untested; reproducing them needs a failing filesystem or an injection seam.
+		// Untested (need a failing filesystem or an injection seam): close errors, the chmod/truncate
+		// failure branches and their order, and the post-open stat errors.
 		_, err = f.WriteString(output.String())
 		closeErr := f.Close()
 		if err != nil {
