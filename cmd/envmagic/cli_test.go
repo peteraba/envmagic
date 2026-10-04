@@ -2052,7 +2052,7 @@ func TestShellInit(t *testing.T) {
 var wrapperLoadArgs = []string{
 	"--v load", "-version load", "--version=true load", "-v=true load",
 	"load -help", "load --h", "load --help=true", "-help load",
-	"--debug load", "load --", "--n x load", "-namespace x load",
+	"--debug load", "--debug load -n", "load --", "--n x load", "-namespace x load",
 	"-d load", "--yes load", "--here load", "load -h=true", "load --help=false",
 }
 
@@ -2124,6 +2124,7 @@ func TestShellWrapper(t *testing.T) {
 				{"set", "MARKER", "echo MARKER"},
 				{"-n", "x", "set", "MARKER", "echo MARKER"},
 				{"-n", "-debug", "set", "NAME", "flag namespace"},
+				{"-n", "--help", "set", "NAME", "help namespace"},
 				{"-n", "X", "set", "X", "$(echo executed)"},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
@@ -2140,6 +2141,7 @@ func TestShellWrapper(t *testing.T) {
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
 			checkExport := ""
+			namespaceHelp := `export NAME=before; envmagic -n --help load NAME; test "$NAME" = before`
 			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
 			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"; printf %s "$ZZZ"`
 			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"; printf %s "$ZZZ"`
@@ -2148,6 +2150,7 @@ func TestShellWrapper(t *testing.T) {
 				evalError = "read-only variable"
 			}
 			if shell == "fish" {
+				namespaceHelp = `set -gx NAME before; envmagic -n --help load NAME; test "$NAME" = before`
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
 				checkExport = `; set -q -g export; and echo stray; true`
@@ -2230,6 +2233,7 @@ func TestShellWrapper(t *testing.T) {
 				want    string
 				wantErr string
 			}{
+				{namespaceHelp, "export NAME=\"help namespace\"\n", ""},
 				{`envmagic -n X load --format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
 				{`envmagic -n X load --format=pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
 				{`envmagic -n X load -format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
