@@ -124,7 +124,11 @@ func cmdImport(_ context.Context, cmd *cli.Command) error {
 		src = inPath
 	}
 
-	fmt.Fprintf(os.Stderr, "envmagic: imported %d variable(s) from %s into namespace %q\n", len(kvs), src, ns)
+	names := make(map[string]struct{}, len(kvs))
+	for _, kv := range kvs {
+		names[kv[0]] = struct{}{}
+	}
+	fmt.Fprintf(os.Stderr, "envmagic: imported %d variable(s) from %s into namespace %q\n", len(names), src, ns)
 
 	return nil
 }
@@ -184,7 +188,11 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 	for sc.Scan() {
 		lineNum++
 
-		line := strings.TrimLeft(sc.Text(), " \t")
+		line := sc.Text()
+		if lineNum == 1 {
+			line = strings.TrimPrefix(line, "\uFEFF")
+		}
+		line = strings.TrimLeft(line, " \t")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -214,21 +222,30 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 }
 
 func parseDotenvValue(raw string) (string, error) {
-	if len(raw) == 0 {
+	quoted := strings.TrimLeft(raw, " \t")
+	if len(quoted) == 0 {
 		return "", nil
 	}
-	switch raw[0] {
+	switch quoted[0] {
 	case '\'':
-		end := strings.Index(raw[1:], "'")
+		end := strings.Index(quoted[1:], "'")
 		if end < 0 {
 			return "", fmt.Errorf("unterminated single-quoted value")
 		}
-		return raw[1 : 1+end], nil
+		return quoted[1 : 1+end], checkDotenvTail(quoted[2+end:])
 	case '"':
-		return parseDQString(raw[1:])
+		return parseDQString(quoted[1:])
 	default:
 		return strings.TrimRight(raw, " \t"), nil
 	}
+}
+
+func checkDotenvTail(tail string) error {
+	tail = strings.TrimSpace(tail)
+	if tail != "" && !strings.HasPrefix(tail, "#") {
+		return fmt.Errorf("unexpected characters after quoted value")
+	}
+	return nil
 }
 
 func parseDQString(s string) (string, error) {
@@ -237,7 +254,7 @@ func parseDQString(s string) (string, error) {
 	for i < len(s) {
 		c := s[i]
 		if c == '"' {
-			return b.String(), nil
+			return b.String(), checkDotenvTail(s[i+1:])
 		}
 		if c == '\\' && i+1 < len(s) {
 			i++

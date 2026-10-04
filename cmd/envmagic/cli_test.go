@@ -2133,6 +2133,49 @@ func TestImportEscapes(t *testing.T) {
 	}
 }
 
+func TestImportQuotedValues(t *testing.T) {
+	for _, tc := range []struct{ name, input, want, wantErr string }{
+		{"double trailing garbage", `B="first"second`, "", "line 1: unexpected characters after quoted value"},
+		{"single trailing garbage", `B='first'second`, "", "line 1: unexpected characters after quoted value"},
+		{"double garbage before comment", `A="x"garbage#comment`, "", "line 1: unexpected characters after quoted value"},
+		{"single garbage before comment", `A='x'garbage#comment`, "", "line 1: unexpected characters after quoted value"},
+		{"second line garbage", "# comment\nA=\"x\" second", "", "line 2: unexpected characters after quoted value"},
+		{"double leading space", `A= "quoted"`, "quoted", ""},
+		{"single leading tab", "A=\t'quoted'", "quoted", ""},
+		{"spaced comment", `A="x"   # comment`, "x", ""},
+		{"adjacent comment", `A="x"#c`, "x", ""},
+		{"single comment", `A='x'#c`, "x", ""},
+		{"trailing whitespace", "A=\"x\" \t\r\n", "x", ""},
+		{"BOM", "\uFEFFA=1", "1", ""},
+		{"indented BOM", " \t\uFEFFA=1", "", `line 1: invalid variable name "\ufeffA"`},
+		{"later BOM", "# comment\n\uFEFFA=1", "", "line 2: invalid variable name"},
+		{"duplicate", "A=1\nA=2", "2", ""},
+		{"unquoted unchanged", "A= \tx #c \t", " \tx #c", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := setup(t)
+			if _, _, err := internal.LoadOrCreateKey(); err != nil {
+				t.Fatal(err)
+			}
+			setTestStdin(t, tc.input)
+			r := run("import")
+			if tc.wantErr != "" {
+				if r.code() != 1 || r.err == nil || !strings.Contains(r.err.Error(), tc.wantErr) {
+					t.Fatalf("exit=%d err=%v, want %q", r.code(), r.err, tc.wantErr)
+				}
+				return
+			}
+			wantSummary := "envmagic: imported 1 variable(s) from stdin into namespace \"default\"\n"
+			if r.code() != 0 || r.stderr != wantSummary {
+				t.Fatalf("exit=%d stderr=%q err=%v, want %q", r.code(), r.stderr, r.err, wantSummary)
+			}
+			if r := run("get", "A"); r.code() != 0 || r.stdout != tc.want+"\n" {
+				t.Fatalf("stdout=%q err=%v, want %q", r.stdout, r.err, tc.want+"\n")
+			}
+		})
+	}
+}
+
 func TestImportUnterminatedQuotes(t *testing.T) {
 	for _, tc := range []struct{ name, input string }{
 		{"single", "KEY='value"},
