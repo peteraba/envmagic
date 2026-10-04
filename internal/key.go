@@ -136,6 +136,8 @@ func createKey(path string, key []byte, link func(string, string) error) ([]byte
 }
 
 func createExclusive(path string, key []byte) error {
+	// ponytail: without hard links there is no atomic no-replace publish, so readers can see a short key until the write ends
+	// (LoadKey waits) and the cleanup removes by name; atomic needs renameat2(RENAME_NOREPLACE) per OS.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to write key file %s: %w", path, err)
