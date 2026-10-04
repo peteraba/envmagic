@@ -1815,6 +1815,67 @@ func TestDefaultDescription(t *testing.T) {
 	}
 }
 
+func seedReservedNamespaceY(t *testing.T, run func(...string) result, value string) {
+	t.Helper()
+	if r := run("set", "Y", value); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	key, _, err := internal.LoadOrCreateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := internal.Encrypt(key, []byte(value), internal.AD("load", "Y"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := internal.OpenStore(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Set("load", "Y", enc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReservedNamespace(t *testing.T) {
+	binary := buildShellBinary(t)
+	run := setup(t)
+	seedReservedNamespaceY(t, run, "original")
+	before, err := os.ReadFile(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range [][]string{{"-n", "load"}, {"--n", "load"}, {"-namespace", "load"}, {"--namespace=load"}, {"-n=load"}} {
+		for _, command := range [][]string{{"set", "Y", "changed"}, {"get", "Y"}, {"load"}, {"list"}, {"rm", "Y"}, {"export"}, {"import"}} {
+			args := append(append([]string{}, flag...), command...)
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				cmd := exec.Command(binary, args...)
+				cmd.Stdin = strings.NewReader("Y=changed\n")
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: namespace \"load\" is reserved\n" {
+					t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+				}
+				after, err := os.ReadFile(".envmagic")
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("store changed: %v", err)
+				}
+			})
+		}
+	}
+	for _, namespace := range []string{"Load", "loads"} {
+		if r := run("-n", namespace, "set", "Y", "allowed"); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		if r := run("-n", namespace, "get", "Y"); r.code() != 0 || r.stdout != "allowed\n" {
+			t.Errorf("namespace %q: %+v", namespace, r)
+		}
+	}
+}
+
 // TestNamespaces verifies that entries in different namespaces are fully
 // isolated from each other.
 func TestNamespaces(t *testing.T) {
@@ -2003,6 +2064,27 @@ func TestShellWrapper(t *testing.T) {
 				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
+			shellEnv := []string{
+				"HOME=" + home,
+				"ZDOTDIR=" + home,
+				"PATH=" + os.Getenv("PATH"),
+				"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
+				"AppData=" + os.Getenv("AppData"),
+			}
+			seedReservedNamespaceY(t, run, "echo EXECUTED")
+			for _, flag := range []string{"--n", "-namespace"} {
+				t.Run("reserved "+flag, func(t *testing.T) {
+					cmd := exec.Command(path, "-c", init+"envmagic "+flag+" load get Y")
+					cmd.Env = shellEnv
+					var stderr bytes.Buffer
+					cmd.Stderr = &stderr
+					out, err := cmd.Output()
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: namespace \"load\" is reserved\n" {
+						t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+					}
+				})
+			}
 			for _, tc := range []struct {
 				command string
 				want    string
@@ -2048,13 +2130,7 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic load --help`, string(loadHelp), ""},
 			} {
 				cmd := exec.Command(path, "-c", init+tc.command)
-				cmd.Env = []string{
-					"HOME=" + home,
-					"ZDOTDIR=" + home,
-					"PATH=" + os.Getenv("PATH"),
-					"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
-					"AppData=" + os.Getenv("AppData"),
-				}
+				cmd.Env = shellEnv
 				var stderr bytes.Buffer
 				cmd.Stderr = &stderr
 				out, err := cmd.Output()

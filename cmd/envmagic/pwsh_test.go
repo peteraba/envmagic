@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,6 +153,19 @@ func TestShellWrapperPwsh(t *testing.T) {
 		}
 	}
 	init := "envmagic shell-init pwsh | Out-String | Invoke-Expression\n"
+	seedReservedNamespaceY(t, run, loadAssignment("PWNED", "EXECUTED", "pwsh"))
+	for _, flag := range []string{"--n", "-namespace"} {
+		t.Run("reserved "+flag, func(t *testing.T) {
+			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:PWNED -ErrorAction SilentlyContinue; envmagic `+flag+` load get Y; $code = $LASTEXITCODE; if (Test-Path Env:PWNED) { throw 'stored value applied' }; exit $code`)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: namespace \"load\" is reserved\n" {
+				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
+			}
+		})
+	}
 	confirm := "envmagic: environment variables set\n"
 	for _, tc := range []struct {
 		command string

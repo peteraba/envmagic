@@ -29,6 +29,7 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 
 // shellInitPosix / shellInitFish eval only load; confirm only load without a name.
 // Namespace values are skipped; help/version/format flags always bypass eval.
+// All three scans know only -n/--namespace; other spellings rely on reserving load. New root flags taking values can reintroduce this.
 
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
