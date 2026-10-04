@@ -90,7 +90,7 @@ func setupBare(t *testing.T) func(args ...string) result {
 		// Prevent urfave/cli's error handler from calling os.Exit during tests.
 		app.ExitErrHandler = func(_ context.Context, _ *cli.Command, _ error) {}
 
-		appErr := app.Run(context.Background(), append([]string{"envmagic"}, args...))
+		appErr := runApp(app, append([]string{"envmagic"}, args...))
 
 		_ = wOut.Close()
 		_ = wErr.Close()
@@ -920,6 +920,15 @@ func TestSetFlagParsing(t *testing.T) {
 	}
 }
 
+func TestFlagSourceError(t *testing.T) {
+	run := setup(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "yes")
+	r := run("list")
+	if r.code() != 1 || r.stdout != "" || r.err == nil || r.stderr != "envmagic: "+r.err.Error()+"\n" || !strings.Contains(r.stderr, "parse error") {
+		t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want exit 1 and one parse diagnostic", r.code(), r.stdout, r.stderr, r.err)
+	}
+}
+
 func TestUsageErrorsNoStdout(t *testing.T) {
 	argsList := [][]string{
 		{"--bogus"},
@@ -940,12 +949,12 @@ func TestUsageErrorsNoStdout(t *testing.T) {
 			r := run(args...)
 			// Runtime-added help bypasses the usage hook and adds a trailing blank line.
 			if args[0] == "help" {
-				if r.code() == 0 || r.stdout != "" || !strings.Contains(r.stderr, "flag provided but not defined") {
+				if r.code() != 1 || r.stdout != "" || r.err == nil || r.stderr != "Incorrect Usage: "+r.err.Error()+"\n\n" {
 					t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want non-zero exit, empty stdout and an unknown-flag diagnostic", r.code(), r.stdout, r.stderr, r.err)
 				}
 				return
 			}
-			if r.code() != 1 || r.stdout != "" || !strings.HasPrefix(r.stderr, "Incorrect Usage: ") || strings.Count(r.stderr, "\n") != 1 {
+			if r.code() != 1 || r.stdout != "" || r.err == nil || r.stderr != "Incorrect Usage: "+r.err.Error()+"\n" {
 				t.Errorf("exit=%d stdout=%q stderr=%q err=%v; want exit 1, empty stdout and a one-line usage diagnostic", r.code(), r.stdout, r.stderr, r.err)
 			}
 		})
@@ -1715,6 +1724,8 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic get NAME`, value + "\n", ""},
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{`envmagic get MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
+				{`ENVMAGIC_NONINTERACTIVE=yes envmagic list; echo "rc=` + status + `"`, "rc=1\n", "envmagic: could not parse \"yes\" as bool value from environment variable \"ENVMAGIC_NONINTERACTIVE\" for flag yes: parse error\n"},
 				{`envmagic load -x; echo "rc=` + status + `"`, "rc=1\n", "Incorrect Usage: flag provided but not defined: -x\n"},
 				{evalFailure, "rc=1\n", evalError},
 				{earlyEvalFailure, "rc=1\n", evalError},
