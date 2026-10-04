@@ -65,7 +65,7 @@ Store commands find the nearest `.envmagic` in the current directory or its pare
 On Unix (including root), stores owned by another user are skipped with a warning; symlinks to stores you own work, and Windows has no ownership check.
 The library refuses to open stores owned by another user on Unix.
 If none exists, `set` and `import` offer to create one in the current directory;
-use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt.
+use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt (required when stdin is not a terminal).
 Use `-n NS` to select a namespace; the default is `default`.
 
 Variable names are uppercased automatically: `envmagic api_key …` stores

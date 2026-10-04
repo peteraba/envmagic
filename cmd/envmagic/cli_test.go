@@ -298,12 +298,17 @@ func TestSetStdinReadError(t *testing.T) {
 	}
 }
 
-func TestSetStdinTerminal(t *testing.T) {
-	run := setup(t)
-	input := setTestStdin(t, "secret\n")
+func setTestTerminal(t *testing.T) {
+	t.Helper()
 	original := stdinIsTerminal
 	stdinIsTerminal = func() bool { return true }
 	t.Cleanup(func() { stdinIsTerminal = original })
+}
+
+func TestSetStdinTerminal(t *testing.T) {
+	run := setup(t)
+	input := setTestStdin(t, "secret\n")
+	setTestTerminal(t)
 	r := run("set", "TOKEN")
 	want := "usage: envmagic set [-n NS] NAME [VALUE]; without VALUE, pipe the value on stdin (e.g. printf '%s' \"$SECRET\" | envmagic set NAME)"
 	if r.code() != 2 || r.stdout != "" || r.err.Error() != want {
@@ -325,6 +330,7 @@ func TestCreateStorePrompt(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			setTestTerminal(t)
 			setTestStdin(t, "y\n")
 			r := run(args...)
 			if r.code() != 0 || !strings.Contains(r.stderr, "No .envmagic file found. Create ") || !strings.Contains(r.stderr, "? [y/N]: ") {
@@ -337,6 +343,68 @@ func TestCreateStorePrompt(t *testing.T) {
 				t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 			}
 		})
+	}
+}
+
+func TestCreateStoreWithoutTerminal(t *testing.T) {
+	for _, args := range [][]string{{"import"}, {"set", "TOKEN", "v"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			run := setupBare(t)
+			t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+			var input *os.File
+			var err error
+			if args[0] == "import" {
+				var output *os.File
+				input, output, err = os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = output.Close() })
+				if _, err := output.WriteString("TOKEN=v\n"); err != nil {
+					t.Fatal(err)
+				}
+				_ = output.Close()
+			} else {
+				input, err = os.Open(os.DevNull)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := os.Stdin
+			os.Stdin = input
+			t.Cleanup(func() {
+				os.Stdin = original
+				_ = input.Close()
+			})
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("envmagic: no .envmagic in %s or any parent; rerun with --yes (or ENVMAGIC_NONINTERACTIVE=1) to create one", cwd)
+			if r := run(args...); r.code() != 1 || r.stdout != "" || r.stderr != "" || r.err.Error() != want {
+				t.Fatalf("exit=%d stdout=%q stderr=%q err=%v; want %q", r.code(), r.stdout, r.stderr, r.err, want)
+			}
+			if _, err := os.Stat(".envmagic"); !os.IsNotExist(err) {
+				t.Fatalf("store created without consent: %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateStorePromptBufferedAnswers(t *testing.T) {
+	run := setupBare(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	setTestTerminal(t)
+	setTestStdin(t, "maybe\ny\n")
+	r := run("set", "TOKEN", "v")
+	if r.code() != 0 || r.stdout != "" || strings.Count(r.stderr, "? [y/N]: ") != 2 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q err=%v; want two prompts", r.code(), r.stdout, r.stderr, r.err)
+	}
+	if _, err := os.Stat(".envmagic"); err != nil {
+		t.Fatalf("store not created: %v", err)
+	}
+	if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "v\n" {
+		t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 	}
 }
 
@@ -534,6 +602,7 @@ func TestHereWriteStore(t *testing.T) {
 				stdinSet := len(args) == 2 && args[0] == "set"
 				inputValue := ""
 				if mode == "prompt" && !stdinSet {
+					setTestTerminal(t)
 					inputValue = "y\n"
 				} else if stdinSet {
 					inputValue = "updated\n"
@@ -548,8 +617,8 @@ func TestHereWriteStore(t *testing.T) {
 				r := run(append(flags, args...)...)
 				fails := mode == "no terminal" || (mode == "prompt" && stdinSet)
 				if fails {
-					wantErr := "envmagic: read prompt: EOF"
-					wantStderr := fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", local)
+					wantErr := fmt.Sprintf("envmagic: no .envmagic in %s or any parent; rerun with --yes (or ENVMAGIC_NONINTERACTIVE=1) to create one", filepath.Dir(local))
+					wantStderr := ""
 					if stdinSet {
 						wantErr = "envmagic: no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store"
 						wantStderr = ""
