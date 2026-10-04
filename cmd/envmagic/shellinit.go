@@ -69,8 +69,8 @@ envmagic() {
         case "$_envmagic_arg" in
             -n|--namespace) _envmagic_skip=1 ;;
             -n=*|--namespace=*) ;;
-            -*)
-                printf 'envmagic: load accepts only -n/--namespace (got %s)\n' "$_envmagic_arg" >&2
+            ''|[!A-Za-z_]*|*[!A-Za-z0-9_]*)
+                printf 'envmagic: load accepts only -n/--namespace and a NAME (got %s)\n' "$_envmagic_arg" >&2
                 return 2
                 ;;
         esac
@@ -130,9 +130,11 @@ function envmagic
             case -n --namespace
                 set _envmagic_skip 1
             case '-n=*' '--namespace=*'
-            case '-*'
-                printf 'envmagic: load accepts only -n/--namespace (got %s)\n' "$_envmagic_arg" >&2
-                return 2
+            case '*'
+                if not string match -rq '^[A-Za-z_][A-Za-z0-9_]*\z' -- "$_envmagic_arg"
+                    printf 'envmagic: load accepts only -n/--namespace and a NAME (got %s)\n' "$_envmagic_arg" >&2
+                    return 2
+                end
         end
     end
     set -l _envmagic_out (command envmagic $argv | string collect)
@@ -187,12 +189,13 @@ function envmagic {
             $skip = $true
         } elseif ($arg -clike '-n=*' -or $arg -clike '--namespace=*') {
             continue
-        } elseif ($arg -like '-*') {
-            [Console]::Error.WriteLine("envmagic: load accepts only -n/--namespace (got $arg)")
+        } elseif ($arg -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*\z') {
+            [Console]::Error.WriteLine("envmagic: load accepts only -n/--namespace and a NAME (got $arg)")
             $global:LASTEXITCODE = 2
             return
         }
     }
+    # Keep --format prepended so it stays a root flag before any NAME.
     $out = & $binary --format pwsh @argv
     if ($LASTEXITCODE -ne 0) { return }
     $values = @{}

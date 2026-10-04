@@ -64,7 +64,8 @@ literally named like a flag (`--help`, `--format`) also passes through without
 loading into the shell.
 `envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
 Bare `envmagic` shows help. `--debug` echoes only load exports to stderr.
-Through the shell wrapper, `load` accepts only `-n`/`--namespace` flags;
+Through the shell wrapper, `load` accepts only `-n`/`--namespace` and an optional
+valid NAME (`[A-Za-z_][A-Za-z0-9_]*`);
 use `command envmagic --debug load` for other flags without applying the output.
 
 ## Usage

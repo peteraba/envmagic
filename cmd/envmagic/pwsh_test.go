@@ -113,6 +113,69 @@ func buildShellBinary(t *testing.T) string {
 	return binary
 }
 
+func TestShellWrapperInvalidNameNoCall(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte(`package main
+import "os"
+func main() {
+    _ = os.WriteFile(os.Getenv("ENVMAGIC_TEST_CALLED"), []byte("called"), 0600)
+    os.Exit(99)
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := "envmagic"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(dir, name), source).CombinedOutput(); err != nil {
+		t.Fatalf("build fake: %v\n%s", err, out)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("POWERSHELL_TELEMETRY_OPTOUT", "1")
+	for _, shell := range []string{"bash", "zsh", "fish", "pwsh"} {
+		t.Run(shell, func(t *testing.T) {
+			called := filepath.Join(t.TempDir(), "called")
+			t.Setenv("ENVMAGIC_TEST_CALLED", called)
+			path, err := exec.LookPath(shell)
+			if err != nil {
+				if os.Getenv("CI") != "" {
+					t.Fatalf("%s is required in CI", shell)
+				}
+				t.Skip(shell + " is not on PATH")
+			}
+			init, exit := shellInitPosix, "; exit $?"
+			options := []string{"-c"}
+			switch shell {
+			case "fish":
+				init, exit = shellInitFish, "; exit $status"
+			case "pwsh":
+				init, exit = shellInitPwsh, "; exit $LASTEXITCODE"
+				options = []string{"-NoProfile", "-NonInteractive", "-Command"}
+			}
+			for _, args := range wrapperLoadArgs {
+				if !strings.HasPrefix(args, "load '") {
+					continue
+				}
+				cmd := exec.Command(path, append(options, init+"envmagic "+args+exit)...)
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				var exitErr *exec.ExitError
+				arg := strings.Trim(strings.TrimPrefix(args, "load "), "'")
+				wantErr := "envmagic: load accepts only -n/--namespace and a NAME (got " + arg + ")\n"
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != wantErr {
+					t.Errorf("%s: err=%v stdout=%q stderr=%q", args, err, out, stderr.String())
+				}
+				if _, err := os.Stat(called); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("%s: program called (marker stat: %v)", args, err)
+				}
+			}
+		})
+	}
+}
+
 func TestShellWrapperPwsh(t *testing.T) {
 	path, err := exec.LookPath("pwsh")
 	if err != nil {
@@ -141,6 +204,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{"set", "VERSION", "Set-Item Env:PWNED 1"},
 		{"set", "HELP", "Set-Item Env:PWNED 1"},
 		{"set", "H", "h value"},
+		{"set", "_X1", "underscore value"},
 		{"-n", "x", "set", "PWNED", "Set-Item Env:PWNED 1"},
 		{"-n", "-debug", "set", "NAME", "flag namespace"},
 		{"set", "EMPTY", ""},
@@ -168,10 +232,14 @@ func TestShellWrapperPwsh(t *testing.T) {
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
-			flag := strings.Fields(strings.TrimPrefix(args, "load "))[0]
+			arg := strings.TrimPrefix(args, "load ")
+			flag := strings.Fields(arg)[0]
+			if strings.HasPrefix(arg, "'") {
+				flag = strings.Trim(arg, "'")
+			}
 			wantCode := 2
 			wantOut := ""
-			wantErr := "envmagic: load accepts only -n/--namespace (got " + flag + ")\n"
+			wantErr := "envmagic: load accepts only -n/--namespace and a NAME (got " + flag + ")\n"
 			if args == "--n x load" || args == "-namespace x load" {
 				wantCode = 0
 				wantOut = "export PWNED=\"Set-Item Env:PWNED 1\"\n"
@@ -198,7 +266,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
 			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace (got "+flag+")\n" {
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace and a NAME (got "+flag+")\n" {
 				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 			}
 		})
@@ -211,7 +279,7 @@ func TestShellWrapperPwsh(t *testing.T) {
 			out, err := cmd.Output()
 			var exit *exec.ExitError
 			flag := strings.Fields(args)[0]
-			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace (got "+flag+")\n" {
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || strings.ReplaceAll(stderr.String(), "\r\n", "\n") != "envmagic: load accepts only -n/--namespace and a NAME (got "+flag+")\n" {
 				t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 			}
 		})
@@ -231,6 +299,8 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic $null load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic @($null) load; [Console]::Out.Write($env:NAME)`, value, confirm},
 		{`envmagic load NAME; [Console]::Out.Write($env:NAME)`, value, ""},
+		{`envmagic load name; [Console]::Out.Write($env:NAME)`, value, ""},
+		{`envmagic load _X1; [Console]::Out.Write($env:_X1)`, "underscore value", ""},
 		{`envmagic load help; [Console]::Out.Write($env:HELP)`, "Set-Item Env:PWNED 1", ""},
 		{`envmagic load h; [Console]::Out.Write($env:H)`, "h value", ""},
 		{`envmagic -n -debug load NAME; [Console]::Out.Write($env:NAME)`, "flag namespace", ""},
@@ -286,9 +356,9 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic -n X load '--%' '--format posix'`, "0", ""},
 		{`envmagic -n X load @('--format','posix')`, "0", ""},
 		{`$f = '--format','posix'; envmagic -n X load $f`, "0", ""},
-		{`envmagic -n X load (,@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
-		{`envmagic -n X @('load',@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
-		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "2", "envmagic: load accepts only -n/--namespace (got --format posix)\n"},
+		{`envmagic -n X load (,@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace and a NAME (got --format posix)\n"},
+		{`envmagic -n X @('load',@('--format','posix'))`, "2", "envmagic: load accepts only -n/--namespace and a NAME (got --format posix)\n"},
+		{`$f = [System.Collections.Generic.List[object]]::new(); $f.Add(@('--format','posix')); envmagic -n X load $f`, "2", "envmagic: load accepts only -n/--namespace and a NAME (got --format posix)\n"},
 	} {
 		t.Run("format "+tc.command, func(t *testing.T) {
 			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+`Remove-Item Env:X, Env:PWNED -ErrorAction SilentlyContinue; `+tc.command+"\n"+`if ((Test-Path Env:X) -or (Test-Path Env:PWNED)) { throw 'explicit format evaluated' }; [Console]::Out.Write($LASTEXITCODE)`)
