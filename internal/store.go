@@ -55,7 +55,7 @@ func OpenStore(path string) (*Store, error) {
 	if filepath.VolumeName(absPath) != "" && p[0] != '/' {
 		p = "/" + p
 	}
-	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"}).String()
+	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(1)"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database, path: %s, error: %w", path, err)

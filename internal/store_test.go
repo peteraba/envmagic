@@ -140,15 +140,94 @@ func TestOpenStorePermissions(t *testing.T) {
 	if err := store.Set("default", "KEY", []byte("value")); err != nil {
 		t.Fatal(err)
 	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		info, err := os.Stat(path + suffix)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("%s: mode=%#o, want 0600", path, got)
+	}
+}
+
+func assertNoSidecars(t *testing.T, path string) {
+	t.Helper()
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+			t.Errorf("SQLite sidecar %s: stat error=%v, want file not to exist", suffix, err)
+		}
+	}
+}
+
+func TestOpenStoreUsesDeleteJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "delete" {
+		t.Errorf("journal_mode = %q, want delete", mode)
+	}
+	if err := store.Set("default", "KEY", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoSidecars(t, path)
+}
+
+func TestOpenStoreMigratesHotWAL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".envmagic")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.Exec(`CREATE TABLE env_vars (namespace TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (namespace, name))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'KEY', x'0102')`); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path + "-wal"); err != nil || info.Size() == 0 {
+		t.Fatalf("want non-empty -wal, got %v, %v", info, err)
+	}
+	// Simulate a crashed writer: copy the db with its hot WAL, leave -shm behind.
+	hot := filepath.Join(t.TempDir(), ".envmagic")
+	for _, suffix := range []string{"", "-wal"} {
+		data, err := os.ReadFile(path + suffix)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Errorf("%s: mode=%#o, want 0600", path+suffix, got)
+		if err := os.WriteFile(hot+suffix, data, 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
+	store, err := OpenStore(hot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mode string
+	if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "delete" {
+		t.Errorf("journal_mode = %q, want delete", mode)
+	}
+	got, err := store.Get("default", "KEY")
+	if err != nil || !bytes.Equal(got, []byte{1, 2}) {
+		t.Errorf("Get = %v, %v, want [1 2]", got, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoSidecars(t, hot)
 }
 
 func TestOpenStoreBusyTimeout(t *testing.T) {
@@ -473,8 +552,8 @@ func TestOpenStoreSpecialPathsPersist(t *testing.T) {
 			if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
 				t.Fatal(err)
 			}
-			if journalMode != "wal" {
-				t.Errorf("journal_mode = %q, want wal", journalMode)
+			if journalMode != "delete" {
+				t.Errorf("journal_mode = %q, want delete", journalMode)
 			}
 			var foreignKeys int
 			if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
@@ -531,8 +610,8 @@ func TestOpenStoreRelativePathsPersist(t *testing.T) {
 			if err := store.db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
 				t.Fatal(err)
 			}
-			if journalMode != "wal" {
-				t.Errorf("journal_mode = %q, want wal", journalMode)
+			if journalMode != "delete" {
+				t.Errorf("journal_mode = %q, want delete", journalMode)
 			}
 			var foreignKeys int
 			if err := store.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
@@ -685,4 +764,28 @@ func TestOpenStoreAllowsTablesAndIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
+}
+
+func TestOpenStoreFailsWhileWALHeldElsewhere(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = raw.Close() })
+	if _, err := raw.Exec(`CREATE TABLE t (x)`); err != nil {
+		t.Fatal(err)
+	}
+	// The modernc driver surfaces SQLite's SQLITE_BUSY from the journal_mode pragma; there is no silent fallback.
+	store, err := OpenStore(path)
+	if store != nil {
+		_ = store.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "database is locked") {
+		t.Fatalf("OpenStore err = %v, want database is locked", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO t VALUES (1)`); err != nil {
+		t.Fatalf("other connection broken: %v", err)
+	}
 }
