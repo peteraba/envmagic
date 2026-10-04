@@ -38,11 +38,30 @@ func LoadKey(path string) ([]byte, error) {
 
 // WriteKey writes the key with owner-only permissions, creating its directory if needed.
 func WriteKey(path string, key []byte) error {
+	// ponytail: write/close error checks and absence of O_TRUNC lack tests; need a short-write/RLIMIT fixture or a writable regular file the user cannot chmod.
+	// The 0o600 create mode is also unbound (fchmod masks it), but closes the window between create and fchmod.
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("failed to create key file directory %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
 		return fmt.Errorf("failed to write key file %s: %w", path, err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to set key file permissions %s: %w", path, err)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to truncate key file %s: %w", path, err)
+	}
+	_, err = f.Write(key)
+	closeErr := f.Close()
+	if err != nil {
+		return fmt.Errorf("failed to write key file %s: %w", path, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close key file %s: %w", path, closeErr)
 	}
 	return nil
 }

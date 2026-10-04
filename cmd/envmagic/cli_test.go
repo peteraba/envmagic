@@ -2331,6 +2331,65 @@ func TestKeySetPermissions(t *testing.T) {
 			t.Errorf("%s: mode=%#o, want %#o", path, got, want)
 		}
 	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key = bytes.Repeat([]byte{2}, 32)
+	if r := run("key", "--set", base64.StdEncoding.EncodeToString(key)); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("key=%x err=%v, want %x", got, err, key)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("overwritten key: mode=%#o, want 0600", got)
+	}
+}
+
+func TestKeyPermissionsWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not report Unix permission bits")
+	}
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			run := setup(t)
+			path := isolateKeyPath(t)
+			if r := run("set", "TOKEN", "secret"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+			if kind == "symlink" {
+				target := filepath.Join(t.TempDir(), "key")
+				if err := os.Rename(path, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o620, 0o602, 0o610, 0o601, 0o600, 0o700} {
+				t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
+					if err := os.Chmod(path, mode); err != nil {
+						t.Fatal(err)
+					}
+					wantStderr := ""
+					if mode != 0o600 && mode != 0o700 {
+						wantStderr = fmt.Sprintf("envmagic: warning: key file %s is readable by other users (mode %04o); run chmod 600 %s\n", path, mode, path)
+					}
+					r := run("get", "TOKEN")
+					if r.code() != 0 || r.stdout != "secret\n" || r.stderr != wantStderr {
+						t.Fatalf("exit=%d stdout=%q stderr=%q err=%v, want stderr=%q", r.code(), r.stdout, r.stderr, r.err, wantStderr)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestKeySetRejectsInvalidKey(t *testing.T) {

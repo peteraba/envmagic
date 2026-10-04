@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -567,7 +568,8 @@ func promptYesNo(prompt string) (bool, error) {
 }
 
 // loadKey loads or creates the user's encryption key; when a new key file is
-// created, backup instructions are printed to stderr.
+// created, backup instructions are printed to stderr. It also warns on stderr
+// when the key file permissions allow access by other users.
 func loadKey() ([]byte, error) {
 	path, err := internal.KeyPath()
 	if err != nil {
@@ -579,6 +581,11 @@ func loadKey() ([]byte, error) {
 	}
 	if created {
 		notifyNewEncryptionKey(key, path)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+			fmt.Fprintf(os.Stderr, "envmagic: warning: key file %s is readable by other users (mode %04o); run chmod 600 %s\n", path, info.Mode().Perm(), path)
+		}
 	}
 	return key, nil
 }
