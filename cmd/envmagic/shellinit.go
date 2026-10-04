@@ -15,9 +15,9 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 	}
 	switch cmd.Args().First() {
 	case "bash", "zsh", "sh":
-		fmt.Print(shellInitPosix)
+		fmt.Printf("%s", shellInitPosix)
 	case "fish":
-		fmt.Print(shellInitFish)
+		fmt.Printf("%s", shellInitFish)
 	case "pwsh", "powershell":
 		fmt.Print(shellInitPwsh)
 	default:
@@ -29,9 +29,7 @@ func cmdShellInit(_ context.Context, cmd *cli.Command) error {
 
 // shellInitPosix / shellInitFish eval only load; confirm only load without a name.
 // Namespace values are skipped; help/version/format flags always bypass eval.
-// All three scans know only -n/--namespace; other spellings are safe because
-// the namespace flag may appear only once (OnlyOnce) and load is reserved.
-// A new root flag taking a value can reintroduce this.
+// All three wrappers reject load flags other than -n/--namespace before calling the program.
 
 const shellInitPosix = `# envmagic shell integration - load with: eval "$(envmagic shell-init zsh)"
 envmagic() {
@@ -62,6 +60,21 @@ envmagic() {
         command envmagic "$@"
         return $?
     fi
+    _envmagic_skip=0
+    for _envmagic_arg in "$@"; do
+        if [ "$_envmagic_skip" -eq 1 ]; then
+            _envmagic_skip=0
+            continue
+        fi
+        case "$_envmagic_arg" in
+            -n|--namespace) _envmagic_skip=1 ;;
+            -n=*|--namespace=*) ;;
+            ''|[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
+                printf 'envmagic: load accepts only -n/--namespace and a NAME (got %s)\n' "$_envmagic_arg" >&2
+                return 2
+                ;;
+        esac
+    done
     local _envmagic_out _envmagic_rc
     _envmagic_out="$(command envmagic "$@")"
     _envmagic_rc=$?
@@ -107,6 +120,23 @@ function envmagic
         command envmagic $argv
         return $status
     end
+    set _envmagic_skip 0
+    for _envmagic_arg in $argv
+        if test $_envmagic_skip -eq 1
+            set _envmagic_skip 0
+            continue
+        end
+        switch "$_envmagic_arg"
+            case -n --namespace
+                set _envmagic_skip 1
+            case '-n=*' '--namespace=*'
+            case '*'
+                if not string match -rq '^[A-Za-z_][A-Za-z0-9_]*\z' -- "$_envmagic_arg"
+                    printf 'envmagic: load accepts only -n/--namespace and a NAME (got %s)\n' "$_envmagic_arg" >&2
+                    return 2
+                end
+        end
+    end
     set -l _envmagic_out (command envmagic $argv | string collect)
     set -l _envmagic_rc $pipestatus[1]
     if test $_envmagic_rc -ne 0
@@ -149,6 +179,23 @@ function envmagic {
         & $binary @argv
         return
     }
+    $skip = $false
+    foreach ($arg in $argv) {
+        if ($skip) {
+            $skip = $false
+            continue
+        }
+        if ($arg -cin '-n', '--namespace') {
+            $skip = $true
+        } elseif ($arg -clike '-n=*' -or $arg -clike '--namespace=*') {
+            continue
+        } elseif ($arg -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*\z') {
+            [Console]::Error.WriteLine("envmagic: load accepts only -n/--namespace and a NAME (got $arg)")
+            $global:LASTEXITCODE = 2
+            return
+        }
+    }
+    # Prepending keeps a trailing -n/--namespace from swallowing --format.
     $out = & $binary --format pwsh @argv
     if ($LASTEXITCODE -ne 0) { return }
     $values = @{}

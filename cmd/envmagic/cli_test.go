@@ -2049,6 +2049,35 @@ func TestShellInit(t *testing.T) {
 	}
 }
 
+var wrapperLoadArgs = []string{
+	"--v load", "-version load", "--version=true load", "-v=true load",
+	"load -help", "load --h", "load --help=true", "-help load",
+	"--debug load", "--debug load -n", "load --", "--n x load", "-namespace x load",
+	"-d load", "--yes load", "--here load", "load -h=true", "load --help=false",
+	"load ' -h'", "load ' --'", "load ' --v'", "load '-h '", "load ''", "load 'A B'", "load 'a-b'",
+	"load 'NAME\n'", "load '\u212A'", "load '\u0130'",
+}
+
+func TestHelpVariableNames(t *testing.T) {
+	run := setup(t)
+	for _, name := range []string{"help", "h"} {
+		if r := run("set", name, "stored "+name); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		if r := run("get", name); r.code() != 0 || r.stdout != "stored "+name+"\n" {
+			t.Errorf("get %s: %+v", name, r)
+		}
+		if r := run("load", name); r.code() != 0 || r.stdout != "export "+strings.ToUpper(name)+"=\"stored "+name+"\"\n" {
+			t.Errorf("load %s: %+v", name, r)
+		}
+	}
+	for _, args := range [][]string{{"help"}, {"help", "load"}, {"help", "get"}, {"help", "set"}, {"load", "--help"}, {"get", "--help"}, {"set", "--help"}} {
+		if r := run(args...); r.code() != 0 || !strings.Contains(r.stdout, "USAGE:") {
+			t.Errorf("help %v: %+v", args, r)
+		}
+	}
+}
+
 func TestShellWrapper(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		if os.Getenv("CI") != "" {
@@ -2091,6 +2120,14 @@ func TestShellWrapper(t *testing.T) {
 			multiline := "-----BEGIN KEY-----\n  abc\ndef\n-----END KEY-----\n"
 			for _, args := range [][]string{
 				{"set", "name", value},
+				{"set", "VERSION", "echo MARKER"},
+				{"set", "HELP", "echo MARKER"},
+				{"set", "H", "h value"},
+				{"set", "_X1", "underscore value"},
+				{"set", "MARKER", "echo MARKER"},
+				{"-n", "x", "set", "MARKER", "echo MARKER"},
+				{"-n", "-debug", "set", "NAME", "flag namespace"},
+				{"-n", "--help", "set", "NAME", "help namespace"},
 				{"-n", "X", "set", "X", "$(echo executed)"},
 				{"-n", "staging", "set", "name", "staging value"},
 				{"-n", "staging", "set", "other", "second value"},
@@ -2107,6 +2144,7 @@ func TestShellWrapper(t *testing.T) {
 			init := `eval "$(envmagic shell-init ` + shell + `)"` + "\n"
 			status := "$?"
 			checkExport := ""
+			namespaceHelp := `export NAME=before; envmagic -n --help load NAME; test "$NAME" = before`
 			evalFailure := `readonly NAME; envmagic load; echo "rc=$?"`
 			earlyEvalFailure := `readonly PWD; envmagic -n ro-early load; echo "rc=$?"; printf %s "$ZZZ"`
 			plainEvalFailure := `readonly PWD; eval "$(command envmagic -n ro-early load)"; echo "rc=$?"; printf %s "$ZZZ"`
@@ -2115,6 +2153,7 @@ func TestShellWrapper(t *testing.T) {
 				evalError = "read-only variable"
 			}
 			if shell == "fish" {
+				namespaceHelp = `set -gx NAME before; envmagic -n --help load NAME; test "$NAME" = before`
 				init = "envmagic shell-init fish | source\n"
 				status = "$status"
 				checkExport = `; set -q -g export; and echo stray; true`
@@ -2131,6 +2170,40 @@ func TestShellWrapper(t *testing.T) {
 				"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
 				"AppData=" + os.Getenv("AppData"),
 			}
+			for _, args := range wrapperLoadArgs {
+				t.Run("args "+args, func(t *testing.T) {
+					check := `; code=$?; if [ "$VERSION" != before ] || [ "$HELP" != before ] || [ "$MARKER" != before ]; then echo 'unexpected output applied' >&2; exit 1; fi; exit "$code"`
+					if shell == "fish" {
+						check = `; set -l code $status; if test "$VERSION" != before; or test "$HELP" != before; or test "$MARKER" != before; echo 'unexpected output applied' >&2; exit 1; end; exit $code`
+					}
+					cmd := exec.Command(path, "-c", init+`envmagic `+args+check)
+					cmd.Env = append(shellEnv, "VERSION=before", "HELP=before", "MARKER=before")
+					var stderr bytes.Buffer
+					cmd.Stderr = &stderr
+					out, err := cmd.Output()
+					arg := strings.TrimPrefix(args, "load ")
+					flag := strings.Fields(arg)[0]
+					if strings.HasPrefix(arg, "'") {
+						flag = strings.Trim(arg, "'")
+					}
+					wantCode := 2
+					wantOut := ""
+					wantErr := "envmagic: load accepts only -n/--namespace and a NAME (got " + flag + ")\n"
+					if args == "--n x load" || args == "-namespace x load" {
+						wantCode = 0
+						wantOut = "export MARKER=\"echo MARKER\"\n"
+						wantErr = ""
+					}
+					if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != wantCode || string(out) != wantOut || stderr.String() != wantErr {
+						t.Errorf("err=%v stdout=%q stderr=%q wantErr=%q", err, out, stderr.String(), wantErr)
+					}
+					for _, name := range []string{"VERSION", "HELP", "MARKER"} {
+						if r := run("get", name); r.code() != 0 || r.stdout != "echo MARKER\n" {
+							t.Errorf("%s changed: %+v", name, r)
+						}
+					}
+				})
+			}
 			seedReservedNamespaceY(t, run, "echo EXECUTED")
 			if r := run("-n", "x", "set", "Y", "echo EXECUTED"); r.code() != 0 {
 				t.Fatal(r.err)
@@ -2143,7 +2216,7 @@ func TestShellWrapper(t *testing.T) {
 					cmd.Stderr = &stderr
 					out, err := cmd.Output()
 					var exit *exec.ExitError
-					if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: namespace \"load\" is reserved\n" {
+					if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: load accepts only -n/--namespace and a NAME (got "+flag+")\n" {
 						t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 					}
 				})
@@ -2156,7 +2229,8 @@ func TestShellWrapper(t *testing.T) {
 					cmd.Stderr = &stderr
 					out, err := cmd.Output()
 					var exit *exec.ExitError
-					if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(out) != 0 || !strings.Contains(stderr.String(), "can't duplicate this flag") {
+					flag := strings.Fields(args)[0]
+					if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(out) != 0 || stderr.String() != "envmagic: load accepts only -n/--namespace and a NAME (got "+flag+")\n" {
 						t.Errorf("err=%v stdout=%q stderr=%q", err, out, stderr.String())
 					}
 				})
@@ -2166,6 +2240,7 @@ func TestShellWrapper(t *testing.T) {
 				want    string
 				wantErr string
 			}{
+				{namespaceHelp, "export NAME=\"help namespace\"\n", ""},
 				{`envmagic -n X load --format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
 				{`envmagic -n X load --format=pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
 				{`envmagic -n X load -format pwsh; printf %s "$X" "$PWNED"`, "$env:X = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JChlY2hvIGV4ZWN1dGVkKQ=='))\n", ""},
@@ -2174,11 +2249,12 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic --namespace staging list`, "NAME\nOTHER\n", ""},
 				{`envmagic --namespace=staging list`, "NAME\nOTHER\n", ""},
 				{`envmagic get NAME`, value + "\n", ""},
+				{`envmagic --debug get NAME`, value + "\n", ""},
 				{`envmagic NAME`, value + "\n", ""},
 				{`envmagic load MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
 				{`envmagic get MISSING; echo "rc=` + status + `"`, "rc=1\n", "envmagic: MISSING not found in namespace \"default\"\n"},
 				{`ENVMAGIC_NONINTERACTIVE=yes envmagic list; echo "rc=` + status + `"`, "rc=1\n", "envmagic: could not parse \"yes\" as bool value from environment variable \"ENVMAGIC_NONINTERACTIVE\" for flag yes: parse error\n"},
-				{`envmagic load -x; echo "rc=` + status + `"`, "rc=1\n", "Incorrect Usage: flag provided but not defined: -x\n"},
+				{`envmagic load -x; echo "rc=` + status + `"`, "rc=2\n", "envmagic: load accepts only -n/--namespace and a NAME (got -x)\n"},
 				{evalFailure, "rc=1\n", evalError},
 				{earlyEvalFailure, "rc=1\n", evalError},
 				{plainEvalFailure, "rc=1\n", evalError},
@@ -2190,6 +2266,12 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic -n staging >/dev/null; printf %s "$NAME"`, "", ""},
 				{`envmagic load NAME; printf %s "$NAME"`, value, ""},
+				{`envmagic load name; printf %s "$NAME"`, value, ""},
+				{`envmagic load _X1; printf %s "$_X1"`, "underscore value", ""},
+				{`envmagic load help; printf %s "$HELP"`, "echo MARKER", ""},
+				{`envmagic load h; printf %s "$H"`, "h value", ""},
+				{`envmagic -n -debug load NAME; printf %s "$NAME"`, "flag namespace", ""},
+				{`envmagic --namespace -debug load NAME; printf %s "$NAME"`, "flag namespace", ""},
 				{`envmagic -n multiline load NAME; printf %s "$NAME"` + checkExport, multiline, ""},
 				{`envmagic -n multiline load; printf %s "$NAME"; printf %s "$OTHER"` + checkExport, multiline + "second value", confirm},
 				{`envmagic -n staging load NAME; printf %s "$NAME"`, "staging value", ""},
@@ -2199,11 +2281,15 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic load -n staging; printf '%s/%s' "$NAME" "$OTHER"`, "staging value/second value", confirm},
 				{`envmagic --namespace staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic --namespace=staging load; printf %s "$NAME"`, "staging value", confirm},
+				{`envmagic -n=staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", ""},
 				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", ""},
 				{`envmagic -n staging --help`, string(help), ""},
 				{`envmagic -n staging -h`, string(help), ""},
 				{`envmagic load --help`, string(loadHelp), ""},
+				{`envmagic --debug load --help`, string(loadHelp), ""},
+				{`envmagic --version load`, "envmagic version v0.5.0\n", ""},
+				{`envmagic -v load`, "envmagic version v0.5.0\n", ""},
 			} {
 				cmd := exec.Command(path, "-c", init+tc.command)
 				cmd.Env = shellEnv
