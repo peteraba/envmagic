@@ -1,6 +1,6 @@
 BINARY  := envmagic
 
-.PHONY: build install install-tools lint test version tag release
+.PHONY: build install install-tools lint fmt test version tag release
 
 build:
 	go build -o $(BINARY) ./cmd/envmagic
@@ -15,9 +15,12 @@ install-tools:
 	go install github.com/goreleaser/goreleaser/v2@latest
 
 lint:
-	gofumpt -w .
+	@out=$$(gofumpt -l .) || exit $$?; if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 	golangci-lint run ./...
 	govulncheck ./...
+
+fmt:
+	gofumpt -w .
 
 test: lint
 	go test ./...

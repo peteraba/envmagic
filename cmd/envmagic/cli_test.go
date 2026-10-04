@@ -615,9 +615,10 @@ func TestHereWriteStore(t *testing.T) {
 				}
 				input := setTestStdin(t, inputValue)
 				flags := []string{"--here"}
-				if mode == "yes" {
+				switch mode {
+				case "yes":
 					flags = append(flags, "--yes")
-				} else if mode == "noninteractive" {
+				case "noninteractive":
 					t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
 				}
 				r := run(append(flags, args...)...)
