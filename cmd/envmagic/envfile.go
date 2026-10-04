@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -221,8 +222,12 @@ func parseDotenv(r io.Reader) ([][2]string, error) {
 		result = append(result, [2]string{name, val})
 	}
 
-	if err := sc.Err(); err != nil {
+	err := sc.Err()
+	if errors.Is(err, bufio.ErrTooLong) {
 		return nil, fmt.Errorf("line %d: %w", lineNum+1, err)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/urfave/cli/v3"
 
@@ -1483,12 +1485,34 @@ func TestLongValueExportImport(t *testing.T) {
 	if r.stdout != value+"\n" {
 		t.Fatalf("get: got %d bytes, want exact value plus newline", len(r.stdout))
 	}
+	r = run("-n", "imported", "--debug", "load")
+	if r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if r.stderr != r.stdout || len(r.stderr) <= 64<<10 {
+		t.Fatalf("debug load: stdout %d bytes, stderr %d bytes, want identical output over 64 KiB", len(r.stdout), len(r.stderr))
+	}
 }
 
 func TestDotenvLineTooLong(t *testing.T) {
 	_, err := parseDotenv(strings.NewReader("# comment\n\nLONG=" + strings.Repeat("a", 16<<20)))
 	if err == nil || err.Error() != "line 3: bufio.Scanner: token too long" {
 		t.Fatalf("got %v, want scanner error on line 3", err)
+	}
+	entries, err := parseDotenv(strings.NewReader("LONG=" + strings.Repeat("a", 16<<20-6) + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || len(entries[0][1]) != 16<<20-6 {
+		t.Fatal("want one entry with the largest accepted value")
+	}
+}
+
+func TestDotenvReaderError(t *testing.T) {
+	want := errors.New("reader failed")
+	_, err := parseDotenv(io.MultiReader(strings.NewReader("A=1\nB=2\n"), iotest.ErrReader(want)))
+	if !errors.Is(err, want) || strings.HasPrefix(err.Error(), "line ") {
+		t.Fatalf("got %v, want reader error without a line prefix", err)
 	}
 }
 
