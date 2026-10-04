@@ -461,6 +461,9 @@ func findOrCreateStorePath(cmd *cli.Command) (string, os.FileInfo, error) {
 	if cmd.Root().Bool("yes") {
 		return target, nil, nil
 	}
+	if !stdinIsTerminal() {
+		return "", nil, errorf("no .envmagic in %s or any parent; rerun with --yes (or ENVMAGIC_NONINTERACTIVE=1) to create one", cwd)
+	}
 	ok, err := promptYesNo(fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", target))
 	if err != nil {
 		return "", nil, errorf("read prompt: %v", err)
@@ -539,10 +542,9 @@ func shellQuote(s string) string {
 }
 
 func promptYesNo(prompt string) (bool, error) {
+	r := bufio.NewReader(os.Stdin)
 	for range 3 {
 		fmt.Fprint(os.Stderr, prompt)
-
-		r := bufio.NewReader(os.Stdin)
 
 		line, err := r.ReadString('\n')
 		if err != nil && !errors.Is(err, os.ErrClosed) && line == "" {
