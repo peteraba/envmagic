@@ -2049,9 +2049,11 @@ func TestNewEncryptionKeyOutput(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			run := setupBare(t)
-			original := stderrIsTerminal
-			stderrIsTerminal = func() bool { return terminal }
-			t.Cleanup(func() { stderrIsTerminal = original })
+			if terminal {
+				original := stderrIsTerminal
+				stderrIsTerminal = func() bool { return true }
+				t.Cleanup(func() { stderrIsTerminal = original })
+			}
 
 			r := run("--yes", "set", "TOKEN", "secret")
 			if r.code() != 0 {
