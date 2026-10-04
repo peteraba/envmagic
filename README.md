@@ -170,6 +170,8 @@ or `PASS`.
 
 `envmagic` can be imported as a Go library for applications that need to load
 secrets into their environment at start-up.
+The store and key must already exist (created by `envmagic set` or `import`);
+a missing store or key returns an error matching `errors.Is(err, os.ErrNotExist)`.
 
 ```sh
 go get github.com/peteraba/envmagic

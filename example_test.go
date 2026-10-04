@@ -38,7 +38,19 @@ func Example() {
 		panic(fmt.Sprintf("key path %q is outside example directory %q: %v", keyPath, dir, err))
 	}
 
-	c, err := envmagic.OpenWithPath(filepath.Join(dir, ".envmagic"))
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		panic(err)
+	}
+	storePath := filepath.Join(dir, ".envmagic")
+	store, err := internal.OpenStore(storePath)
+	if err != nil {
+		panic(err)
+	}
+	if err := store.Close(); err != nil {
+		panic(err)
+	}
+
+	c, err := envmagic.OpenWithPath(storePath)
 	if err != nil {
 		panic(err)
 	}

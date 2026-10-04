@@ -34,10 +34,83 @@ func isolateKeyPath(t *testing.T) string {
 	return path
 }
 
+func createTestStore(t *testing.T, storePath string) {
+	t.Helper()
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := internal.OpenStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpen_MissingFiles(t *testing.T) {
+	for _, name := range []string{"Open", "OpenWithPath", "OpenWithKeyAndPath"} {
+		t.Run(name, func(t *testing.T) {
+			for _, missing := range []string{"store", "key", "both"} {
+				t.Run(missing, func(t *testing.T) {
+					keyPath := isolateKeyPath(t)
+					dir := t.TempDir()
+					t.Chdir(dir)
+					storePath := filepath.Join(dir, ".envmagic")
+					createTestStore(t, storePath)
+					if missing != "store" {
+						if err := os.Remove(keyPath); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if missing != "key" {
+						if err := os.Remove(storePath); err != nil {
+							t.Fatal(err)
+						}
+					}
+
+					var client *envmagic.Client
+					var err error
+					switch name {
+					case "Open":
+						client, err = envmagic.Open()
+					case "OpenWithPath":
+						client, err = envmagic.OpenWithPath(storePath)
+					case "OpenWithKeyAndPath":
+						client, err = envmagic.OpenWithKeyAndPath(keyPath, storePath)
+					}
+					if client != nil {
+						_ = client.Close()
+						t.Error("returned a client with a missing store or key")
+					}
+					wantPath := keyPath
+					if missing == "store" {
+						wantPath = storePath
+					}
+					if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), wantPath) {
+						t.Errorf("err=%v, want os.ErrNotExist naming %s", err, wantPath)
+					}
+					if missing != "store" {
+						if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("key created: %v", err)
+						}
+					}
+					if missing != "key" {
+						if _, err := os.Stat(storePath); !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("store created: %v", err)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestOpenWithPath_RelativePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	isolateKeyPath(t)
+	createTestStore(t, ".envmagic")
 	c, err := envmagic.OpenWithPath(".envmagic")
 	if err != nil {
 		t.Fatal(err)
@@ -51,33 +124,11 @@ func TestOpenWithPath_RelativePath(t *testing.T) {
 	}
 }
 
-func TestOpenWithPath_KeyCreated(t *testing.T) {
-	isolateKeyPath(t)
-	storePath := filepath.Join(t.TempDir(), ".envmagic")
-
-	c1, err := envmagic.OpenWithPath(storePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = c1.Close()
-	if !c1.KeyCreated() {
-		t.Fatal("first open: want KeyCreated true (new key file)")
-	}
-
-	c2, err := envmagic.OpenWithPath(storePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = c2.Close()
-	if c2.KeyCreated() {
-		t.Fatal("second open: want KeyCreated false")
-	}
-}
-
 func TestClient_Get_ErrNotFound(t *testing.T) {
 	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
 
+	createTestStore(t, storePath)
 	c, err := envmagic.OpenWithPath(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +210,7 @@ func TestOpenWithKeyAndPath(t *testing.T) {
 func TestClient_Load(t *testing.T) {
 	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	createTestStore(t, storePath)
 	client, err := envmagic.OpenWithPath(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +267,7 @@ func TestClient_Load_ErrorSetsNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateKeyPath(t)
 			storePath := filepath.Join(t.TempDir(), ".envmagic")
+			createTestStore(t, storePath)
 			client, err := envmagic.OpenWithPath(storePath)
 			if err != nil {
 				t.Fatal(err)
@@ -272,6 +325,7 @@ func TestClient_CiphertextBinding(t *testing.T) {
 			t.Setenv("ENVMAGIC_TOKEN", "unchanged")
 			t.Setenv(tc.name, "unchanged")
 			storePath := filepath.Join(t.TempDir(), ".envmagic")
+			createTestStore(t, storePath)
 			client, err := envmagic.OpenWithPath(storePath)
 			if err != nil {
 				t.Fatal(err)
@@ -333,6 +387,7 @@ func TestClient_LegacyCiphertext(t *testing.T) {
 	const name = "ENVMAGIC_LEGACY"
 	t.Setenv(name, "unchanged")
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	createTestStore(t, storePath)
 	client, err := envmagic.OpenWithPath(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -382,6 +437,7 @@ func TestClient_LegacyCiphertext(t *testing.T) {
 func TestClient_Load_InvalidStoredName(t *testing.T) {
 	isolateKeyPath(t)
 	storePath := filepath.Join(t.TempDir(), ".envmagic")
+	createTestStore(t, storePath)
 	client, err := envmagic.OpenWithPath(storePath)
 	if err != nil {
 		t.Fatal(err)
