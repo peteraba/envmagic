@@ -52,6 +52,8 @@ envmagic shell-init pwsh | Out-String | Invoke-Expression
 
 Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
 statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
+Use `envmagic --format fish load [NAME]` to print fish `set -gx` assignments with
+single-quoted values; apply them with `envmagic --format fish load | source`.
 Use `envmagic --format pwsh load [NAME]` to print ASCII-only PowerShell assignments
 that decode base64 values as UTF-8 with `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('…'))`.
 Apply them with `envmagic --format pwsh load | Out-String | Invoke-Expression`.

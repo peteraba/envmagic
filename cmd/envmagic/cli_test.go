@@ -1408,6 +1408,10 @@ func TestEmitRejectsStoredNUL(t *testing.T) {
 		{"--debug", "load", "Z_BAD"},
 		{"--format", "pwsh", "load"},
 		{"--format", "pwsh", "--debug", "load", "Z_BAD"},
+		{"--format", "fish", "load"},
+		{"--format", "fish", "load", "Z_BAD"},
+		{"--format", "fish", "--debug", "load"},
+		{"--format", "fish", "--debug", "load", "Z_BAD"},
 		{"export"},
 	} {
 		r := run(args...)
@@ -2026,7 +2030,7 @@ func TestShellInit(t *testing.T) {
 	if fish.stdout == bash.stdout {
 		t.Error("fish init should differ from POSIX init")
 	}
-	for _, want := range []string{"for _envmagic_arg in $argv", "case -n --namespace", "case -h --help -v --version", `"$_envmagic_command" != load`} {
+	for _, want := range []string{"for _envmagic_arg in $argv", "case -n --namespace", "case -h --help -v --version", `"$_envmagic_command" != load`, "command envmagic --format fish $argv | string collect"} {
 		if !strings.Contains(fish.stdout, want) {
 			t.Errorf("fish init: missing %q", want)
 		}
@@ -2159,7 +2163,7 @@ func TestShellWrapper(t *testing.T) {
 				checkExport = `; set -q -g export; and echo stray; true`
 				evalFailure = `envmagic -n ro load; echo "rc=$status"`
 				earlyEvalFailure = `envmagic -n ro-early load; echo "rc=$status"; printf %s "$ZZZ"`
-				plainEvalFailure = `eval (command envmagic -n ro-early load); echo "rc=$status"; printf %s "$ZZZ"`
+				plainEvalFailure = `eval (command envmagic --format fish -n ro-early load); echo "rc=$status"; printf %s "$ZZZ"`
 				evalError = "read-only variable"
 			}
 			confirm := "envmagic: environment variables set\n"
@@ -2169,6 +2173,54 @@ func TestShellWrapper(t *testing.T) {
 				"PATH=" + os.Getenv("PATH"),
 				"XDG_CONFIG_HOME=" + os.Getenv("XDG_CONFIG_HOME"),
 				"AppData=" + os.Getenv("AppData"),
+			}
+			if shell == "fish" {
+				for _, tc := range []struct {
+					name  string
+					value string
+				}{
+					{"empty", ""},
+					{"backtick", "a`b$c\"d\\e"},
+					{"dollar", "$cash"},
+					{"double-quote", `"`},
+					{"single-quote", `'`},
+					{"backslash", `\`},
+					{"backslash-quote", `\'`},
+					{"trailing-backslash", `trailing\`},
+					{"newline", "first\nsecond\n"},
+					{"cr", "first\rsecond\r"},
+					{"crlf", "first\r\nsecond\r\n"},
+					{"substitution", "(echo executed) $(echo executed)"},
+					{"braces", "{a,b}"},
+					{"glob", "*"},
+					{"tilde", "~"},
+					{"comment", "#"},
+					{"unicode", "árvíz 雪"},
+					{"invalid-utf8", "a\xffb\xc3(\xfe\x80"},
+					{"injection", "'; set -gx PWNED 1; echo '"},
+				} {
+					t.Run("roundtrip/"+tc.name, func(t *testing.T) {
+						if r := run("-n", "roundtrip", "set", "SAMPLE", tc.value); r.code() != 0 {
+							t.Fatal(r.err)
+						}
+						for _, name := range []string{"SAMPLE", ""} {
+							t.Run("load "+name, func(t *testing.T) {
+								cmd := exec.Command(path, "-c", init+`envmagic -n roundtrip load `+name+`; or exit $status; if set -q PWNED; exit 99; end; printf %s "$SAMPLE"`)
+								cmd.Env = shellEnv
+								var stderr bytes.Buffer
+								cmd.Stderr = &stderr
+								out, err := cmd.Output()
+								wantErr := ""
+								if name == "" {
+									wantErr = confirm
+								}
+								if err != nil || string(out) != tc.value || stderr.String() != wantErr {
+									t.Errorf("err=%v stdout=%q want=%q stderr=%q wantErr=%q", err, out, tc.value, stderr.String(), wantErr)
+								}
+							})
+						}
+					})
+				}
 			}
 			for _, args := range wrapperLoadArgs {
 				t.Run("args "+args, func(t *testing.T) {

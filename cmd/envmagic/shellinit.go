@@ -137,7 +137,7 @@ function envmagic
                 end
         end
     end
-    set -l _envmagic_out (command envmagic $argv | string collect)
+    set -l _envmagic_out (command envmagic --format fish $argv | string collect)
     set -l _envmagic_rc $pipestatus[1]
     if test $_envmagic_rc -ne 0
         return $_envmagic_rc
