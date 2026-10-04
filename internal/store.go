@@ -106,15 +106,29 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Set(namespace, name string, encrypted []byte) error {
-	_, err := s.db.Exec(`
-		INSERT INTO env_vars (namespace, name, value, updated_at)
-		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(namespace, name) DO UPDATE SET
-			value = excluded.value,
-			updated_at = CURRENT_TIMESTAMP
-	`, namespace, name, encrypted)
+	return s.SetAll(namespace, []Entry{{Name: name, Enc: encrypted}})
+}
+
+func (s *Store) SetAll(namespace string, entries []Entry) error {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to set entry, namespace: %s, name: %s, error: %w", namespace, name, err)
+		return fmt.Errorf("failed to begin transaction, namespace: %s, error: %w", namespace, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, entry := range entries {
+		_, err := tx.Exec(`
+			INSERT INTO env_vars (namespace, name, value, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(namespace, name) DO UPDATE SET
+				value = excluded.value,
+				updated_at = CURRENT_TIMESTAMP
+		`, namespace, entry.Name, entry.Enc)
+		if err != nil {
+			return fmt.Errorf("failed to set entry, namespace: %s, name: %s, error: %w", namespace, entry.Name, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction, namespace: %s, error: %w", namespace, err)
 	}
 	return nil
 }

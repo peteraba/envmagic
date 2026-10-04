@@ -7,8 +7,75 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestStoreSetAll(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), ".envmagic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	entries := []Entry{{Name: "A", Enc: []byte("new")}, {Name: "B", Enc: []byte("x")}}
+	if err := store.SetAll("default", entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		got, err := store.Get("default", entry.Name)
+		if err != nil || !bytes.Equal(got, entry.Enc) {
+			t.Errorf("Get(%s) = %q, %v, want %q", entry.Name, got, err, entry.Enc)
+		}
+	}
+}
+
+func TestStoreSetAllRollback(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".envmagic")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = db.Exec(`CREATE TABLE env_vars (
+				namespace TEXT NOT NULL,
+				name TEXT NOT NULL CHECK (name <> 'B'),
+				value BLOB NOT NULL,
+				updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (namespace, name)
+			)`)
+			_ = db.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := OpenStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if existing {
+				if err := store.Set("default", "A", []byte("old")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = store.SetAll("default", []Entry{{Name: "A", Enc: []byte("new")}, {Name: "B", Enc: []byte("x")}})
+			if err == nil || !strings.Contains(err.Error(), "name: B") {
+				t.Fatalf("SetAll error = %v, want failing entry B", err)
+			}
+			got, err := store.Get("default", "A")
+			if existing {
+				if err != nil || string(got) != "old" {
+					t.Errorf("Get(A) = %q, %v, want old", got, err)
+				}
+			} else if err != ErrEntryNotFound {
+				t.Errorf("Get(A) = %q, %v, want ErrEntryNotFound", got, err)
+			}
+			if _, err := store.Get("default", "B"); err != ErrEntryNotFound {
+				t.Errorf("Get(B) error = %v, want ErrEntryNotFound", err)
+			}
+		})
+	}
+}
 
 func TestOpenStorePermissions(t *testing.T) {
 	permissiveUmask(t)
