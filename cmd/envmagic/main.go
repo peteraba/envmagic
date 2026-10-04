@@ -537,20 +537,11 @@ func openCheckedStore(path string, checked os.FileInfo) (*internal.Store, error)
 	return s, nil
 }
 
+var shellEscaper = strings.NewReplacer(`"`, `\"`, `\`, `\\`, `$`, `\$`, "`", "\\`")
+
 // shellQuote returns a shell-escaped version of s, suitable for use in export statements.
 func shellQuote(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 2)
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"', '\\', '$', '`':
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + shellEscaper.Replace(s) + `"`
 }
 
 func promptYesNo(prompt string) (bool, error) {

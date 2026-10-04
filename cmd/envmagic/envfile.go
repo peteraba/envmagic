@@ -268,29 +268,11 @@ func parseDQString(s string) (string, error) {
 	return "", fmt.Errorf("unterminated double-quoted value")
 }
 
+var dotenvEscaper = strings.NewReplacer(
+	`"`, `\"`, `\`, `\\`, `$`, `\$`, "`", "\\`",
+	"\n", `\n`, "\r", `\r`, "\t", `\t`,
+)
+
 func dotenvQuote(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '$':
-			b.WriteString(`\$`)
-		case '`':
-			b.WriteString("\\`")
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + dotenvEscaper.Replace(s) + `"`
 }
