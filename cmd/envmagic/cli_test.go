@@ -1425,6 +1425,60 @@ func TestImportAndExport(t *testing.T) {
 	}
 }
 
+func TestRawByteRoundTrips(t *testing.T) {
+	bash, bashErr := exec.LookPath("bash")
+	binDir := t.TempDir()
+	if bashErr == nil {
+		build := exec.Command("go", "build", "-o", filepath.Join(binDir, "envmagic"), "./")
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build envmagic: %v\n%s", err, out)
+		}
+	}
+	run := setup(t)
+	for i := 1; i <= 255; i++ {
+		name := fmt.Sprintf("BYTE_%03d", i)
+		if r := run("-n", "bytes", "set", "--", name, string([]byte{byte(i)})); r.code() != 0 {
+			t.Fatalf("set %s: %v", name, r.err)
+		}
+	}
+
+	t.Run("export-import", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "export.env")
+		if r := run("-n", "bytes", "export", path); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		if r := run("-n", "imported", "import", path); r.code() != 0 {
+			t.Fatal(r.err)
+		}
+		for i := 1; i <= 255; i++ {
+			name := fmt.Sprintf("BYTE_%03d", i)
+			want := string([]byte{byte(i), '\n'})
+			if r := run("-n", "imported", "get", name); r.code() != 0 || r.stdout != want {
+				t.Errorf("byte 0x%02x: stdout=%q err=%v, want %q", i, r.stdout, r.err, want)
+			}
+		}
+	})
+
+	t.Run("load-bash", func(t *testing.T) {
+		if bashErr != nil {
+			t.Skip("bash is not on PATH")
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("LC_ALL", "C")
+		var script strings.Builder
+		script.WriteString(`eval "$(command envmagic -n bytes load)"` + "\n")
+		var want []byte
+		for i := 1; i <= 255; i++ {
+			fmt.Fprintf(&script, "printf %%s \"$BYTE_%03d\"\n", i)
+			want = append(want, byte(i))
+		}
+		out, err := exec.Command(bash, "--noprofile", "--norc", "-c", script.String()).Output()
+		if err != nil || !bytes.Equal(out, want) {
+			t.Fatalf("load: stdout=%q err=%v, want %q", out, err, want)
+		}
+	})
+}
+
 func TestImportNamespaceBinding(t *testing.T) {
 	run := setup(t)
 	const value = "staging secret with spaces"
