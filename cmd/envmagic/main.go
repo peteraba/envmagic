@@ -256,7 +256,7 @@ func cmdList(_ context.Context, cmd *cli.Command) error {
 		return cli.Exit(fmt.Sprintf("envmagic list: unexpected arguments: %v", cmd.Args().Slice()), 2)
 	}
 
-	s, _, err := openActiveStore()
+	s, _, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -289,7 +289,7 @@ func cmdRemove(_ context.Context, cmd *cli.Command) error {
 		return errorf("invalid env var name %q", rawName)
 	}
 
-	s, _, err := openActiveStore()
+	s, _, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -350,7 +350,7 @@ func runSet(cmd *cli.Command, namespace, name, value string) error {
 }
 
 func runGet(cmd *cli.Command, namespace, name string) error {
-	s, key, err := openActiveStore()
+	s, key, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -385,7 +385,7 @@ func runGet(cmd *cli.Command, namespace, name string) error {
 }
 
 func runSourceAll(namespace string, debug bool) error {
-	s, key, err := openActiveStore()
+	s, key, _, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -426,27 +426,27 @@ func checkValue(name, value string) error {
 	return nil
 }
 
-func openActiveStore() (*internal.Store, []byte, error) {
+func openActiveStore() (*internal.Store, []byte, string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, nil, errorf("getcwd: %v", err)
+		return nil, nil, "", errorf("getcwd: %v", err)
 	}
 	dbPath, checked := findEnvmagic(cwd, true, false)
 	if checked == nil {
-		return nil, nil, errorf("no .envmagic file found in %s or any parent", cwd)
+		return nil, nil, "", errorf("no .envmagic file found in %s or any parent", cwd)
 	}
 
 	key, err := loadKey()
 	if err != nil {
-		return nil, nil, errorf("load key: %v", err)
+		return nil, nil, "", errorf("load key: %v", err)
 	}
 
 	s, err := openCheckedStore(dbPath, checked)
 	if err != nil {
-		return nil, nil, errorf("open store: %v", err)
+		return nil, nil, "", errorf("open store: %v", err)
 	}
 
-	return s, key, nil
+	return s, key, dbPath, nil
 }
 
 // findOrCreateStorePath returns the path to the nearest .envmagic file,

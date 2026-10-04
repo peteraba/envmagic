@@ -464,7 +464,7 @@ func TestSetStdinSizeLimit(t *testing.T) {
 	if r := run("--yes", "set", "TOKEN"); r.code() != 0 || r.stdout != "" {
 		t.Fatalf("set: exit=%d stdout bytes=%d err=%v", r.code(), len(r.stdout), r.err)
 	}
-	s, key, err := openActiveStore()
+	s, key, _, err := openActiveStore()
 	if err != nil {
 		t.Fatal(err)
 	}

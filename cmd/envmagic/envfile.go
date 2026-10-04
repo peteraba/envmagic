@@ -22,7 +22,7 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 	ns := cmd.String("namespace")
 	outPath := cmd.Args().First()
 
-	s, key, err := openActiveStore()
+	s, key, storePath, err := openActiveStore()
 	if err != nil {
 		return err
 	}
@@ -45,17 +45,63 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		fmt.Fprintf(&output, "%s=%s\n", e.Name, dotenvQuote(string(plain)))
 	}
 
-	var w io.Writer = os.Stdout
 	if outPath != "" {
-		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		target, err := os.Stat(outPath)
+		if err != nil && !os.IsNotExist(err) {
+			return errorf("stat %s: %v", outPath, err)
+		}
+		if err == nil {
+			keyPath, err := internal.KeyPath()
+			if err != nil {
+				return errorf("key path: %v", err)
+			}
+			for _, protected := range []struct{ path, label string }{
+				{storePath, "store"},
+				{keyPath, "key file"},
+			} {
+				info, err := os.Stat(protected.path)
+				if err != nil {
+					return errorf("stat %s: %v", protected.path, err)
+				}
+				if os.SameFile(target, info) {
+					return errorf("refusing to export over the %s %s", protected.label, outPath)
+				}
+			}
+		}
+		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE, 0o600)
 		if err != nil {
 			return errorf("open %s: %v", outPath, err)
 		}
-		defer func() { _ = f.Close() }()
-		w = f
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return errorf("stat %s: %v", outPath, err)
+		}
+		if info.Mode().IsRegular() {
+			if err := f.Chmod(0o600); err != nil {
+				_ = f.Close()
+				return errorf("chmod %s: %v", outPath, err)
+			}
+			if err := f.Truncate(0); err != nil {
+				_ = f.Close()
+				return errorf("truncate %s: %v", outPath, err)
+			}
+		}
+		// ponytail: In-place writes leave the target truncated on failure (e.g. disk full);
+		// temp+rename avoids that but breaks FIFOs, /dev/stdout, hard links and file ownership.
+		// Untested (need a failing filesystem or an injection seam): close errors, the chmod/truncate
+		// failure branches and their order, and the post-open stat errors.
+		_, err = f.WriteString(output.String())
+		closeErr := f.Close()
+		if err != nil {
+			return errorf("write %s: %v", outPath, err)
+		}
+		if closeErr != nil {
+			return errorf("close %s: %v", outPath, closeErr)
+		}
+	} else if _, err := fmt.Fprint(os.Stdout, output.String()); err != nil {
+		return errorf("write stdout: %v", err)
 	}
-
-	_, _ = fmt.Fprint(w, output.String())
 
 	if outPath != "" {
 		_, _ = fmt.Fprintf(os.Stderr, "envmagic: exported %d variable(s) from namespace %q to %s\n", len(entries), ns, outPath)
