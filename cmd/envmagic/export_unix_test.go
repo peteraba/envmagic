@@ -86,5 +86,59 @@ func TestExportReadOnlyFile(t *testing.T) {
 	if info.Mode().Perm() != 0o444 {
 		t.Errorf("read-only permissions=%o, want 444", info.Mode().Perm())
 	}
-	checkNoExportTemps(t, filepath.Dir(path))
+}
+
+func TestExportSymlink(t *testing.T) {
+	permissiveUmask(t)
+	run := setup(t)
+	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if err := os.WriteFile("real.env", []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.env", "link"); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("export", "link"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	info, err := os.Lstat("link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link mode=%v, want symlink", info.Mode())
+	}
+	content, err := os.ReadFile("real.env")
+	if err != nil || string(content) != "TOKEN=\"secret\"\n" {
+		t.Errorf("symlink target content=%q err=%v", content, err)
+	}
+	info, err = os.Stat("real.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("symlink target permissions=%o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestExportHardLink(t *testing.T) {
+	run := setup(t)
+	if r := run("set", "TOKEN", "secret"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if err := os.WriteFile("a", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link("a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	if r := run("export", "a"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	content, err := os.ReadFile("b")
+	if err != nil || string(content) != "TOKEN=\"secret\"\n" {
+		t.Errorf("hard link content=%q err=%v", content, err)
+	}
 }

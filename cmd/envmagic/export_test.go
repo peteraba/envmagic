@@ -11,14 +11,6 @@ import (
 	"github.com/peteraba/envmagic/internal"
 )
 
-func checkNoExportTemps(t *testing.T, dir string) {
-	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, ".*.tmp*"))
-	if err != nil || len(paths) != 0 {
-		t.Errorf("temporary files left behind: %v, err=%v", paths, err)
-	}
-}
-
 func TestExportExistingFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permissions")
@@ -29,7 +21,7 @@ func TestExportExistingFile(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	path := filepath.Join(t.TempDir(), "output.env")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("old content longer than the exported TOKEN line\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r := run("export", path)
@@ -48,7 +40,6 @@ func TestExportExistingFile(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("permissions=%o, want 600", info.Mode().Perm())
 	}
-	checkNoExportTemps(t, filepath.Dir(path))
 }
 
 func TestExportRefusesStore(t *testing.T) {
@@ -82,7 +73,6 @@ func TestExportRefusesStore(t *testing.T) {
 			if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "secret\n" {
 				t.Errorf("store after export: stdout=%q err=%v", r.stdout, r.err)
 			}
-			checkNoExportTemps(t, ".")
 		})
 	}
 }
@@ -117,8 +107,6 @@ func TestExportRefusesKey(t *testing.T) {
 			if err != nil || !bytes.Equal(before, after) {
 				t.Errorf("key changed: err=%v", err)
 			}
-			checkNoExportTemps(t, filepath.Dir(path))
-			checkNoExportTemps(t, ".")
 		})
 	}
 }
@@ -135,7 +123,6 @@ func TestExportSymlinkLoop(t *testing.T) {
 	if r.code() != 1 || r.err == nil || !strings.Contains(r.err.Error(), "envmagic: stat loop:") || r.stderr != "" {
 		t.Errorf("export: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
 	}
-	checkNoExportTemps(t, ".")
 }
 
 func TestExportWrongKeyPreservesFile(t *testing.T) {
@@ -167,17 +154,4 @@ func TestExportWrongKeyPreservesFile(t *testing.T) {
 	if err != nil || string(content) != "unchanged" {
 		t.Errorf("failed export changed target: content=%q err=%v", content, err)
 	}
-	checkNoExportTemps(t, filepath.Dir(path))
-}
-
-func TestExportRenameFailureCleanup(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "directory")
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	r := result{err: writeExportFile(path, "TOKEN=\"secret\"\n")}
-	if r.code() != 1 || !strings.Contains(r.err.Error(), "rename ") || r.stderr != "" {
-		t.Errorf("export: exit=%d stderr=%q err=%v", r.code(), r.stderr, r.err)
-	}
-	checkNoExportTemps(t, filepath.Dir(path))
 }

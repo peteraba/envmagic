@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mattn/go-isatty"
@@ -68,25 +67,36 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 					return errorf("refusing to export over the %s %s", protected.label, outPath)
 				}
 			}
-			f, err := os.OpenFile(outPath, os.O_WRONLY, 0)
-			if err != nil {
-				return errorf("open %s: %v", outPath, err)
+		}
+		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE, 0o600)
+		if err != nil {
+			return errorf("open %s: %v", outPath, err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return errorf("stat %s: %v", outPath, err)
+		}
+		if info.Mode().IsRegular() {
+			if err := f.Chmod(0o600); err != nil {
+				_ = f.Close()
+				return errorf("chmod %s: %v", outPath, err)
 			}
-			if !target.Mode().IsRegular() {
-				_, err = f.WriteString(output.String())
-			}
-			closeErr := f.Close()
-			if err != nil {
-				return errorf("write %s: %v", outPath, err)
-			}
-			if closeErr != nil {
-				return errorf("close %s: %v", outPath, closeErr)
+			if err := f.Truncate(0); err != nil {
+				_ = f.Close()
+				return errorf("truncate %s: %v", outPath, err)
 			}
 		}
-		if target == nil || target.Mode().IsRegular() {
-			if err := writeExportFile(outPath, output.String()); err != nil {
-				return err
-			}
+		// ponytail: In-place writes leave the target truncated on failure (e.g. disk full);
+		// temp+rename avoids that but breaks FIFOs, /dev/stdout, hard links and file ownership.
+		// Close errors are untested; reproducing them needs a failing filesystem or an injection seam.
+		_, err = f.WriteString(output.String())
+		closeErr := f.Close()
+		if err != nil {
+			return errorf("write %s: %v", outPath, err)
+		}
+		if closeErr != nil {
+			return errorf("close %s: %v", outPath, closeErr)
 		}
 	} else if _, err := fmt.Fprint(os.Stdout, output.String()); err != nil {
 		return errorf("write stdout: %v", err)
@@ -96,35 +106,6 @@ func cmdExport(_ context.Context, cmd *cli.Command) error {
 		_, _ = fmt.Fprintf(os.Stderr, "envmagic: exported %d variable(s) from namespace %q to %s\n", len(entries), ns, outPath)
 	}
 
-	return nil
-}
-
-func writeExportFile(path, output string) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
-	if err != nil {
-		return errorf("open %s: %v", path, err)
-	}
-	tempPath := f.Name()
-	defer func() {
-		_ = f.Close()
-		if tempPath != "" {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if _, err := f.WriteString(output); err != nil {
-		return errorf("write %s: %v", path, err)
-	}
-	// ponytail: Sync/Close failures are untested; coverage needs a failing filesystem or an injection seam.
-	if err := f.Sync(); err != nil {
-		return errorf("sync %s: %v", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return errorf("close %s: %v", path, err)
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return errorf("rename %s: %v", path, err)
-	}
-	tempPath = ""
 	return nil
 }
 
