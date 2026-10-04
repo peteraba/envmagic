@@ -420,19 +420,287 @@ func TestSetStdinReadLimit(t *testing.T) {
 func TestSetStdinUsesParentStore(t *testing.T) {
 	run := setup(t)
 	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	if _, _, err := internal.LoadOrCreateKey(); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := filepath.Abs(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir("child", 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir("child")
 	setTestStdin(t, "secret\n")
-	if r := run("set", "TOKEN"); r.code() != 0 {
-		t.Fatal(r.err)
+	wantStderr := fmt.Sprintf("envmagic: using %s\nenvmagic: stored TOKEN (namespace %q) in %s\n", parent, "default", parent)
+	if r := run("set", "TOKEN"); r.code() != 0 || r.stdout != "" || r.stderr != wantStderr {
+		t.Fatalf("set: %+v; want stderr=%q", r, wantStderr)
 	}
 	if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "secret\n" {
 		t.Errorf("get: exit=%d stdout=%q err=%v", r.code(), r.stdout, r.err)
 	}
 	if _, err := os.Stat(".envmagic"); !os.IsNotExist(err) {
 		t.Errorf("unexpected child store: %v", err)
+	}
+}
+
+func TestWriteStoreNotice(t *testing.T) {
+	for _, location := range []string{"local", "parent", "symlink"} {
+		for _, args := range [][]string{{"set", "TOKEN", "updated"}, {"TOKEN", "updated"}, {"import"}} {
+			t.Run(location+"/"+strings.Join(args, " "), func(t *testing.T) {
+				run := setup(t)
+				if r := run("set", "TOKEN", "original"); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+				parent, err := filepath.Abs(".envmagic")
+				if err != nil {
+					t.Fatal(err)
+				}
+				dbPath := parent
+				if location != "local" {
+					if err := os.Mkdir("child", 0o700); err != nil {
+						t.Fatal(err)
+					}
+					t.Chdir("child")
+					if location == "symlink" {
+						dbPath = filepath.Join(filepath.Dir(parent), "child", ".envmagic")
+						if err := os.Symlink(parent, dbPath); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				setTestStdin(t, "TOKEN=updated\nOTHER=also\n")
+				want := fmt.Sprintf("envmagic: stored TOKEN (namespace %q) in %s\n", "default", dbPath)
+				if args[0] == "import" {
+					want = "envmagic: imported 2 variable(s) from stdin into namespace \"default\"\n"
+				}
+				if location == "parent" {
+					want = "envmagic: using " + parent + "\n" + want
+				}
+				if r := run(args...); r.code() != 0 || r.stdout != "" || r.stderr != want {
+					t.Fatalf("write: %+v; want stderr=%q", r, want)
+				}
+				if location == "parent" {
+					if _, err := os.Lstat(".envmagic"); !os.IsNotExist(err) {
+						t.Fatalf("unexpected local store: %v", err)
+					}
+				}
+				t.Chdir(filepath.Dir(parent))
+				if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "updated\n" || r.stderr != "" {
+					t.Fatalf("parent store: %+v", r)
+				}
+			})
+		}
+	}
+}
+
+func TestHereWriteStore(t *testing.T) {
+	for _, mode := range []string{"yes", "noninteractive", "prompt", "no terminal", "existing", "symlink"} {
+		for _, args := range [][]string{{"set", "TOKEN", "updated"}, {"TOKEN", "updated"}, {"set", "TOKEN"}, {"import", "input.env"}} {
+			t.Run(mode+"/"+strings.Join(args, " "), func(t *testing.T) {
+				run := setup(t)
+				t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+				if r := run("set", "TOKEN", "parent"); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+				parent, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir("child", 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir("child")
+				local := filepath.Join(parent, "child", ".envmagic")
+				if mode == "existing" || mode == "symlink" {
+					target := local
+					if mode == "symlink" {
+						target = filepath.Join(t.TempDir(), "store")
+						if err := os.Symlink(target, local); err != nil {
+							t.Fatal(err)
+						}
+					}
+					s, err := internal.OpenStore(target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := s.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile("input.env", []byte("TOKEN=updated\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				stdinSet := len(args) == 2 && args[0] == "set"
+				inputValue := ""
+				if mode == "prompt" && !stdinSet {
+					inputValue = "y\n"
+				} else if stdinSet {
+					inputValue = "updated\n"
+				}
+				input := setTestStdin(t, inputValue)
+				flags := []string{"--here"}
+				if mode == "yes" {
+					flags = append(flags, "--yes")
+				} else if mode == "noninteractive" {
+					t.Setenv("ENVMAGIC_NONINTERACTIVE", "1")
+				}
+				r := run(append(flags, args...)...)
+				fails := mode == "no terminal" || (mode == "prompt" && stdinSet)
+				if fails {
+					wantErr := "envmagic: read prompt: EOF"
+					wantStderr := fmt.Sprintf("No .envmagic file found. Create %s? [y/N]: ", local)
+					if stdinSet {
+						wantErr = "envmagic: no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store"
+						wantStderr = ""
+						remaining, err := io.ReadAll(input)
+						if err != nil || string(remaining) != inputValue {
+							t.Fatalf("stdin consumed before consent: %q, %v", remaining, err)
+						}
+					}
+					if r.code() != 1 || r.stdout != "" || r.stderr != wantStderr || r.err.Error() != wantErr {
+						t.Fatalf("write: %+v; want stderr=%q err=%q", r, wantStderr, wantErr)
+					}
+					if _, err := os.Lstat(local); !os.IsNotExist(err) {
+						t.Fatalf("store created without consent: %v", err)
+					}
+				} else {
+					if r.code() != 0 || r.stdout != "" || strings.Contains(r.stderr, "envmagic: using ") {
+						t.Fatalf("write: %+v", r)
+					}
+					if _, err := os.Stat(local); err != nil {
+						t.Fatalf("local store missing: %v", err)
+					}
+					if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "updated\n" || r.stderr != "" {
+						t.Fatalf("local store: %+v", r)
+					}
+				}
+				t.Chdir(parent)
+				if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "parent\n" || r.stderr != "" {
+					t.Fatalf("parent store changed: %+v", r)
+				}
+			})
+		}
+	}
+}
+
+func TestHereSetStdinIgnoresForeignParent(t *testing.T) {
+	run := setup(t)
+	t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+	info, err := os.Stat(".envmagic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := fileOwner
+	t.Cleanup(func() { fileOwner = original })
+	fileOwner = func(candidate os.FileInfo) (int, bool) {
+		if os.SameFile(info, candidate) {
+			return currentUID() + 1, true
+		}
+		return original(candidate)
+	}
+	if err := os.Mkdir("child", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	setTestStdin(t, "secret\n")
+	r := run("--here", "set", "TOKEN")
+	wantErr := "envmagic: no .envmagic file found; reading a value from stdin requires --yes or ENVMAGIC_NONINTERACTIVE=1 to create a store"
+	if r.code() != 1 || r.stderr != "" || r.err.Error() != wantErr {
+		t.Fatalf("write: %+v; want stderr=%q err=%q", r, "", wantErr)
+	}
+}
+
+func TestHereRefusesLocalStore(t *testing.T) {
+	for _, kind := range []string{"foreign", "directory", "dangling", "loop"} {
+		for _, yes := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/yes=%t", kind, yes), func(t *testing.T) {
+				run := setup(t)
+				t.Setenv("ENVMAGIC_NONINTERACTIVE", "")
+				if r := run("set", "TOKEN", "parent"); r.code() != 0 {
+					t.Fatal(r.err)
+				}
+				parent, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir("child", 0o700); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir("child")
+				local := filepath.Join(parent, "child", ".envmagic")
+				warning := ""
+				switch kind {
+				case "foreign":
+					if err := os.WriteFile(local, []byte("untouched"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					info, err := os.Stat(local)
+					if err != nil {
+						t.Fatal(err)
+					}
+					original := fileOwner
+					t.Cleanup(func() { fileOwner = original })
+					fileOwner = func(candidate os.FileInfo) (int, bool) {
+						if os.SameFile(info, candidate) {
+							return currentUID() + 1, true
+						}
+						return original(candidate)
+					}
+					warning = fmt.Sprintf("envmagic: skipping %s: owned by uid %d, not by you (uid %d)\n", local, currentUID()+1, currentUID())
+				case "directory":
+					err = os.Mkdir(local, 0o700)
+				case "dangling":
+					err = os.Symlink("missing", local)
+				case "loop":
+					err = os.Symlink(".envmagic", local)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, args := range [][]string{{"set", "TOKEN", "updated"}, {"set", "TOKEN"}, {"import"}} {
+					setTestStdin(t, "TOKEN=updated\n")
+					flags := []string{"--here"}
+					if yes {
+						flags = append(flags, "--yes")
+					}
+					if r := run(append(flags, args...)...); r.code() != 1 || r.stdout != "" || r.stderr != warning || r.err.Error() != "envmagic: refusing to overwrite skipped store "+local {
+						t.Fatalf("%v: %+v", args, r)
+					}
+				}
+				if kind == "foreign" {
+					if data, err := os.ReadFile(local); err != nil || string(data) != "untouched" {
+						t.Fatalf("foreign file changed: %q, %v", data, err)
+					}
+				}
+				t.Chdir(parent)
+				if r := run("get", "TOKEN"); r.code() != 0 || r.stdout != "parent\n" || r.stderr != "" {
+					t.Fatalf("parent store changed: %+v", r)
+				}
+			})
+		}
+	}
+}
+
+func TestHereIgnoredByReads(t *testing.T) {
+	run := setup(t)
+	if r := run("set", "TOKEN", "parent"); r.code() != 0 {
+		t.Fatal(r.err)
+	}
+	if err := os.Mkdir("child", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("child")
+	for _, args := range [][]string{{"get", "TOKEN"}, {"TOKEN"}, {"load", "TOKEN"}, {"load"}, {"ls"}, {"export"}, {"rm", "TOKEN"}} {
+		want := run(args...)
+		if args[0] == "rm" {
+			if r := run("set", "TOKEN", "parent"); r.code() != 0 {
+				t.Fatal(r.err)
+			}
+		}
+		if r := run(append([]string{"--here"}, args...)...); want.code() != 0 || r.code() != want.code() || r.stdout != want.stdout || r.stderr != want.stderr {
+			t.Fatalf("%v with --here: %+v; want %+v", args, r, want)
+		}
 	}
 }
 

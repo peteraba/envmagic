@@ -60,6 +60,10 @@ func newApp() *cli.Command {
 				Usage:   "create a new .envmagic in the current directory if none exists (no prompt); may use ENVMAGIC_NONINTERACTIVE=1 instead",
 				Sources: cli.EnvVars("ENVMAGIC_NONINTERACTIVE"),
 			},
+			&cli.BoolFlag{
+				Name:  "here",
+				Usage: "with set and import, use or create .envmagic in the current directory instead of a parent's",
+			},
 		},
 		Action: cmdDefault,
 		Commands: []*cli.Command{
@@ -299,8 +303,8 @@ func runSetFromStdin(cmd *cli.Command, namespace, name string) error {
 	if err != nil {
 		return errorf("getcwd: %v", err)
 	}
-	if _, checked := findEnvmagic(cwd, false); checked == nil && !cmd.Root().Bool("yes") {
-		_, _ = findEnvmagic(cwd, true)
+	if _, checked := findEnvmagic(cwd, false, cmd.Root().Bool("here")); checked == nil && !cmd.Root().Bool("yes") {
+		_, _ = findEnvmagic(cwd, true, cmd.Root().Bool("here"))
 		if err := refuseSkippedStore(filepath.Join(cwd, ".envmagic")); err != nil {
 			return err
 		}
@@ -412,7 +416,7 @@ func openActiveStore() (*internal.Store, []byte, error) {
 	if err != nil {
 		return nil, nil, errorf("getcwd: %v", err)
 	}
-	dbPath, checked := findEnvmagic(cwd, true)
+	dbPath, checked := findEnvmagic(cwd, true, false)
 	if checked == nil {
 		return nil, nil, errorf("no .envmagic file found in %s or any parent", cwd)
 	}
@@ -438,8 +442,11 @@ func findOrCreateStorePath(cmd *cli.Command) (string, os.FileInfo, error) {
 	if err != nil {
 		return "", nil, errorf("getcwd: %v", err)
 	}
-	dbPath, checked := findEnvmagic(cwd, true)
+	dbPath, checked := findEnvmagic(cwd, true, cmd.Root().Bool("here"))
 	if checked != nil {
+		if dbPath != filepath.Join(cwd, ".envmagic") {
+			fmt.Fprintf(os.Stderr, "envmagic: using %s\n", dbPath)
+		}
 		return dbPath, checked, nil
 	}
 
@@ -470,7 +477,7 @@ func refuseSkippedStore(target string) error {
 	return nil
 }
 
-func findEnvmagic(start string, warn bool) (string, os.FileInfo) {
+func findEnvmagic(start string, warn, here bool) (string, os.FileInfo) {
 	dir := start
 	for {
 		candidate := filepath.Join(dir, ".envmagic")
@@ -484,7 +491,7 @@ func findEnvmagic(start string, warn bool) (string, os.FileInfo) {
 			}
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
+		if here || parent == dir {
 			return "", nil
 		}
 		dir = parent
