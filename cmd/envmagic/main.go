@@ -21,7 +21,7 @@ import (
 )
 
 // version is overridden at link time for releases.
-var version = "v0.6.0"
+var version = "v0.6.1"
 
 var stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
 
