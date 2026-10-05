@@ -2334,14 +2334,14 @@ func TestShellWrapper(t *testing.T) {
 				{`envmagic --namespace staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic --namespace=staging load; printf %s "$NAME"`, "staging value", confirm},
 				{`envmagic -n=staging load; printf %s "$NAME"`, "staging value", confirm},
-				{`envmagic -n staging --version`, "envmagic version v0.5.0\n", ""},
-				{`envmagic -n staging -v`, "envmagic version v0.5.0\n", ""},
+				{`envmagic -n staging --version`, "envmagic version v0.6.0\n", ""},
+				{`envmagic -n staging -v`, "envmagic version v0.6.0\n", ""},
 				{`envmagic -n staging --help`, string(help), ""},
 				{`envmagic -n staging -h`, string(help), ""},
 				{`envmagic load --help`, string(loadHelp), ""},
 				{`envmagic --debug load --help`, string(loadHelp), ""},
-				{`envmagic --version load`, "envmagic version v0.5.0\n", ""},
-				{`envmagic -v load`, "envmagic version v0.5.0\n", ""},
+				{`envmagic --version load`, "envmagic version v0.6.0\n", ""},
+				{`envmagic -v load`, "envmagic version v0.6.0\n", ""},
 			} {
 				cmd := exec.Command(path, "-c", init+tc.command)
 				cmd.Env = shellEnv

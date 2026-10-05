@@ -369,11 +369,11 @@ func TestShellWrapperPwsh(t *testing.T) {
 		{`envmagic load --help`, string(loadHelp), ""},
 		{`envmagic --debug load --help`, string(loadHelp), ""},
 		{`envmagic load -h`, string(loadHelp), ""},
-		{`envmagic --version load`, "envmagic version v0.5.0\n", ""},
-		{`envmagic -v load`, "envmagic version v0.5.0\n", ""},
+		{`envmagic --version load`, "envmagic version v0.6.0\n", ""},
+		{`envmagic -v load`, "envmagic version v0.6.0\n", ""},
 		{`envmagic load --version; [Console]::Out.Write($LASTEXITCODE)`, "1", "Incorrect Usage: flag provided but not defined: -version\n"},
 		{`envmagic load -v; [Console]::Out.Write($LASTEXITCODE)`, "1", "Incorrect Usage: flag provided but not defined: -v\n"},
-		{`envmagic --version; [Console]::Out.Write($LASTEXITCODE)`, "envmagic version v0.5.0\n0", ""},
+		{`envmagic --version; [Console]::Out.Write($LASTEXITCODE)`, "envmagic version v0.6.0\n0", ""},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			cmd := exec.Command(path, "-NoProfile", "-NonInteractive", "-Command", init+tc.command)
