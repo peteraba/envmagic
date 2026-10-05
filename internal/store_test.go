@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -180,16 +181,45 @@ func TestOpenStoreUsesDeleteJournal(t *testing.T) {
 	assertNoSidecars(t, path)
 }
 
-func TestOpenStoreMigratesHotWAL(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".envmagic")
+const envVarsDDL = `CREATE TABLE env_vars (namespace TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (namespace, name))`
+
+// walStore creates a cleanly closed WAL store at path and returns its bytes.
+func walStore(t *testing.T, path, extra string) []byte {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{envVarsDDL, `INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'KEY', x'0102')`, extra} {
+		if q == "" {
+			continue
+		}
+		if _, err := raw.Exec(q); err != nil {
+			_ = raw.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// hotWALStore simulates a crashed writer: a db copy with a non-empty -wal and no -shm.
+func hotWALStore(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), ".envmagic")
 	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = raw.Close() })
-	if _, err := raw.Exec(`CREATE TABLE env_vars (namespace TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (namespace, name))`); err != nil {
+	if _, err := raw.Exec(envVarsDDL); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := raw.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'KEY', x'0102')`); err != nil {
@@ -198,7 +228,6 @@ func TestOpenStoreMigratesHotWAL(t *testing.T) {
 	if info, err := os.Stat(path + "-wal"); err != nil || info.Size() == 0 {
 		t.Fatalf("want non-empty -wal, got %v, %v", info, err)
 	}
-	// Simulate a crashed writer: copy the db with its hot WAL, leave -shm behind.
 	hot := filepath.Join(t.TempDir(), ".envmagic")
 	for _, suffix := range []string{"", "-wal"} {
 		data, err := os.ReadFile(path + suffix)
@@ -209,6 +238,11 @@ func TestOpenStoreMigratesHotWAL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return hot
+}
+
+func TestOpenStoreMigratesHotWAL(t *testing.T) {
+	hot := hotWALStore(t)
 	store, err := OpenStore(hot)
 	if err != nil {
 		t.Fatal(err)
@@ -282,19 +316,12 @@ func TestStoreSetWaitsForWriteLock(t *testing.T) {
 func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
 	for _, uid := range []int{0, 1000} {
 		t.Run(fmt.Sprintf("uid=%d", uid), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), ".envmagic")
-			db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
+			path := hotWALStore(t)
+			before, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec("CREATE TABLE untouched (value TEXT)"); err != nil {
-				_ = db.Close()
-				t.Fatal(err)
-			}
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadFile(path)
+			walBefore, err := os.ReadFile(path + "-wal")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,17 +342,15 @@ func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(before, after) {
-				t.Error("foreign-owned store changed")
-			}
-			var mode string
-			check, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+			walAfter, err := os.ReadFile(path + "-wal")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = check.Close() }()
-			if err := check.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
-				t.Errorf("journal_mode = %q, %v, want wal (untouched)", mode, err)
+			if !bytes.Equal(before, after) || !bytes.Equal(walBefore, walAfter) {
+				t.Error("foreign-owned store or its -wal changed")
+			}
+			if _, err := os.Stat(path + "-shm"); !os.IsNotExist(err) {
+				t.Errorf("-shm: stat error=%v, want file not to exist", err)
 			}
 		})
 	}
@@ -410,13 +435,7 @@ func TestOpenStoreRejectsForeignOwnerAfterOpen(t *testing.T) {
 			if name == "symlink" {
 				target = filepath.Join(dir, "target")
 			}
-			store, err := OpenStore(target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
+			before := walStore(t, target, "")
 			if name == "symlink" {
 				if err := os.Symlink(target, path); err != nil {
 					if runtime.GOOS == "windows" {
@@ -440,7 +459,7 @@ func TestOpenStoreRejectsForeignOwnerAfterOpen(t *testing.T) {
 				}
 				return 1000, true
 			}
-			store, err = OpenStore(path)
+			store, err := OpenStore(path)
 			if store != nil {
 				_ = store.Close()
 				t.Fatal("OpenStore returned a foreign-owned store after opening")
@@ -451,6 +470,9 @@ func TestOpenStoreRejectsForeignOwnerAfterOpen(t *testing.T) {
 			}
 			if checks != 2 {
 				t.Fatalf("owner checks=%d, want 2", checks)
+			}
+			if after, err := os.ReadFile(target); err != nil || !bytes.Equal(before, after) {
+				t.Errorf("store rejected after open was rewritten (read err=%v)", err)
 			}
 		})
 	}
@@ -739,6 +761,22 @@ func TestOpenStoreRejectsTriggersAndViews(t *testing.T) {
 	}
 }
 
+func TestOpenStoreRejectsViewInWALStoreUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	before := walStore(t, path, `CREATE VIEW stored_names AS SELECT name FROM env_vars`)
+	store, err := OpenStore(path)
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("OpenStore returned a store containing a view")
+	}
+	if err == nil || !strings.Contains(err.Error(), "refusing to open") {
+		t.Fatalf("OpenStore: err=%v, want refusal", err)
+	}
+	if after, err := os.ReadFile(path); err != nil || !bytes.Equal(before, after) {
+		t.Errorf("rejected WAL store was rewritten (read err=%v)", err)
+	}
+}
+
 func TestOpenStoreAllowsTablesAndIndexes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".envmagic")
 	store, err := OpenStore(path)
@@ -865,4 +903,74 @@ func TestOpenStoreConcurrentOpensFromWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoSidecars(t, path)
+}
+
+func TestOpenStoreNewConnectionsStayDelete(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), ".envmagic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	var mode string
+	for i := 0; i < 2; i++ {
+		conn, err := store.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "delete" {
+			t.Errorf("connection %d: journal_mode = %q, %v, want delete", i, mode, err)
+		}
+	}
+}
+
+func skipUnlessChmodWorks(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs enforced unix file permissions")
+	}
+}
+
+func TestOpenStoreReadOnlyWALStore(t *testing.T) {
+	skipUnlessChmodWorks(t)
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	walStore(t, path, "")
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore on read-only WAL store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if got, err := store.Get("default", "KEY"); err != nil || !bytes.Equal(got, []byte{1, 2}) {
+		t.Errorf("Get = %v, %v, want [1 2]", got, err)
+	}
+}
+
+func TestOpenStoreReadOnlyDeleteStore(t *testing.T) {
+	skipUnlessChmodWorks(t)
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("default", "KEY", []byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatalf("OpenStore on read-only DELETE store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if got, err := store.Get("default", "KEY"); err != nil || !bytes.Equal(got, []byte{1, 2}) {
+		t.Errorf("Get = %v, %v, want [1 2]", got, err)
+	}
 }

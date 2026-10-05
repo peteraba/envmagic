@@ -9,8 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	_ "modernc.org/sqlite"
 )
 
 // ErrEntryNotFound is returned by Store.Get when no row exists for the
@@ -101,14 +100,8 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("store %s is owned by uid %d, not by you (uid %d); refusing to open", path, uid, currentUID())
 	}
 
-	// ponytail: leaving WAL needs an exclusive lock without the busy handler; BUSY means another connection is open, so stay in WAL and retry on the next open. A non-BUSY failure can't be provoked cheaply, so it is untested.
-	if _, err := db.Exec(`PRAGMA journal_mode=DELETE`); err != nil {
-		var se *sqlite.Error
-		if !errors.As(err, &se) || se.Code()&0xff != sqlite3.SQLITE_BUSY {
-			_ = db.Close()
-			return nil, fmt.Errorf("failed to set journal mode, path: %s, error: %w", path, err)
-		}
-	}
+	// ponytail: best-effort; it fails while another connection is open (BUSY) or on a read-only store. The store then stays WAL and the next open retries.
+	_, _ = db.Exec(`PRAGMA journal_mode=DELETE`)
 
 	return &Store{db: db}, nil
 }
