@@ -15,6 +15,7 @@ install-tools:
 	go install github.com/goreleaser/goreleaser/v2@latest
 
 lint:
+	go mod tidy -diff
 	@out=$$(gofumpt -l $$(git ls-files '*.go')) || exit $$?; if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 	golangci-lint run ./...
 	govulncheck ./...
@@ -34,11 +35,12 @@ version:
 		echo "OK: version $$VERSION is not yet tagged"; \
 	fi
 
-tag: version
+tag: test version
+	@git diff --quiet HEAD || { echo "Error: uncommitted changes"; exit 1; }
 	@VERSION=$$(go run ./cmd/envmagic --version | awk '{print $$NF}'); \
 	git tag "$$VERSION" && echo "Tagged $$VERSION"
 
 release: tag
 	git push
 	git push --tags
-	goreleaser release --clean
+	GITHUB_TOKEN=$${GITHUB_TOKEN:-$$(gh auth token)} goreleaser release --clean
