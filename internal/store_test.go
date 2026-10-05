@@ -283,7 +283,7 @@ func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
 	for _, uid := range []int{0, 1000} {
 		t.Run(fmt.Sprintf("uid=%d", uid), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), ".envmagic")
-			db, err := sql.Open("sqlite", path)
+			db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -318,10 +318,14 @@ func TestOpenStoreRejectsForeignOwnerBeforeOpen(t *testing.T) {
 			if !bytes.Equal(before, after) {
 				t.Error("foreign-owned store changed")
 			}
-			for _, suffix := range []string{"-wal", "-shm"} {
-				if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
-					t.Errorf("SQLite sidecar %s: stat error=%v, want file not to exist", suffix, err)
-				}
+			var mode string
+			check, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = check.Close() }()
+			if err := check.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
+				t.Errorf("journal_mode = %q, %v, want wal (untouched)", mode, err)
 			}
 		})
 	}
@@ -374,13 +378,6 @@ func TestOpenStoreRejectsForeignOwnerAfterCreate(t *testing.T) {
 						t.Fatal(err)
 					}
 					if checks == foreignCheck && os.SameFile(info, storeInfo) {
-						if foreignCheck == 1 {
-							for _, suffix := range []string{"-wal", "-shm"} {
-								if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
-									t.Errorf("SQLite sidecar %s before ownership rejection: stat error=%v, want file not to exist", suffix, err)
-								}
-							}
-						}
 						return 1001, true
 					}
 					return uid, true
@@ -766,7 +763,16 @@ func TestOpenStoreAllowsTablesAndIndexes(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 }
 
-func TestOpenStoreFailsWhileWALHeldElsewhere(t *testing.T) {
+func journalMode(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	return mode
+}
+
+func TestOpenStoreToleratesWALHeldElsewhere(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".envmagic")
 	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
 	if err != nil {
@@ -774,18 +780,89 @@ func TestOpenStoreFailsWhileWALHeldElsewhere(t *testing.T) {
 	}
 	raw.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = raw.Close() })
-	if _, err := raw.Exec(`CREATE TABLE t (x)`); err != nil {
+	if _, err := raw.Exec(`CREATE TABLE env_vars (namespace TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (namespace, name))`); err != nil {
 		t.Fatal(err)
 	}
-	// The modernc driver surfaces SQLite's SQLITE_BUSY from the journal_mode pragma; there is no silent fallback.
+	if _, err := raw.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'KEY', x'0102')`); err != nil {
+		t.Fatal(err)
+	}
 	store, err := OpenStore(path)
-	if store != nil {
-		_ = store.Close()
+	if err != nil {
+		t.Fatalf("OpenStore while another connection is open: %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "database is locked") {
-		t.Fatalf("OpenStore err = %v, want database is locked", err)
+	if got, err := store.Get("default", "KEY"); err != nil || !bytes.Equal(got, []byte{1, 2}) {
+		t.Errorf("Get = %v, %v, want [1 2]", got, err)
 	}
-	if _, err := raw.Exec(`INSERT INTO t VALUES (1)`); err != nil {
+	if mode := journalMode(t, store.db); mode != "wal" {
+		t.Errorf("journal_mode = %q, want wal while held elsewhere", mode)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO env_vars (namespace, name, value) VALUES ('default', 'K2', x'03')`); err != nil {
 		t.Fatalf("other connection broken: %v", err)
 	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := journalMode(t, store.db); mode != "delete" {
+		t.Errorf("journal_mode = %q, want delete after later open", mode)
+	}
+	if got, err := store.Get("default", "K2"); err != nil || !bytes.Equal(got, []byte{3}) {
+		t.Errorf("Get = %v, %v, want [3]", got, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoSidecars(t, path)
+}
+
+func TestOpenStoreConcurrentOpensFromWAL(t *testing.T) {
+	const workers, rounds = 8, 25
+	path := filepath.Join(t.TempDir(), ".envmagic")
+	for round := 0; round < rounds; round++ {
+		raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=journal_mode(WAL)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := raw.Exec(`CREATE TABLE IF NOT EXISTS t (x)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				<-start
+				store, err := OpenStore(path)
+				if err == nil {
+					err = store.Close()
+				}
+				errs <- err
+			}()
+		}
+		close(start)
+		for i := 0; i < workers; i++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: concurrent OpenStore: %v", round, err)
+			}
+		}
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := journalMode(t, store.db); mode != "delete" {
+		t.Errorf("journal_mode = %q, want delete", mode)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertNoSidecars(t, path)
 }
