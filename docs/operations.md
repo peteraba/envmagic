@@ -116,7 +116,7 @@ Load and execute in the same shell step, checking success:
 
 ```sh
 # Example for a Go project; envmagic must be on PATH and the key provisioned.
-assignments=$(envmagic load) && eval "$assignments" && go test ./...
+assignments=$(command envmagic load) && eval "$assignments" && go test ./...
 ```
 
 A later job step or unrelated shell does not inherit those assignments. The key

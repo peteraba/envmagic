@@ -83,7 +83,7 @@ root and use the nearest eligible `.envmagic`. This applies to writes too: a
 flowchart LR
     Check{"Eligible .envmagic<br/>in this directory?"}
     Check -- Yes --> Use["Use that store"]
-    Check -- No --> Stop{"Root or --here?"}
+    Check -- No --> Stop{"Root or<br/>--here with set/import?"}
     Stop -- No --> Parent["Check parent"] --> Check
     Stop -- Yes --> Write{"set/import?"}
     Write -- No --> Error["No store error"]
