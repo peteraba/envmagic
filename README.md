@@ -1,294 +1,92 @@
 # envmagic
 
-An encrypted env-var store, scoped to your project directory.
+Encrypted environment variables beside your code; a separate key in your user config directory.
 
-`envmagic` is a small Go CLI that lets you stash secrets (API keys, tokens,
-DB URLs) in a per-project encrypted SQLite file, then load them into your
-shell on demand. Values are encrypted at rest with AES-256-GCM using a key
-that lives in your user config dir, never in the repo.
+`envmagic` stores values in a project's `.envmagic` SQLite file and loads them into
+an existing shell or Go process when needed. Values use AES-256-GCM encryption;
+variable names and namespaces remain readable. No service or account is required.
 
-It also ships as an importable Go library for applications that need to load
-secrets into their process environment at start-up.
+```mermaid
+flowchart LR
+    Input["Values you set or import"] --> Encrypt["envmagic encrypts values"]
+    Key["User key<br/>outside the project"] --> Encrypt
+    Encrypt --> Store["Project .envmagic<br/>names + encrypted values"]
+    Store --> Decrypt["envmagic decrypts values"]
+    Key --> Decrypt
+    Decrypt --> Runtime["Shell or Go process<br/>plaintext environment"]
+    Runtime --> Child["Programs started from that process"]
+```
 
-## Why
+## Is it a fit?
 
-`.env` files are convenient but plaintext. Password managers are secure but
-clunky for shell work. `envmagic` sits between them: secrets stay encrypted
-on disk (so the store can live next to your code), and a one-liner exports
-them into the current shell when you need them.
+Use it for local project configuration and secrets you would otherwise keep in
+plaintext dotenv files. Namespaces separate configurations such as `default`
+and `staging`; directory lookup lets commands in subdirectories use the project store.
+
+It is **not** a password manager or a multi-user secrets service. One user key
+serves all projects on that machine. Namespaces are not access controls, and
+loaded values are plaintext in memory. Someone who can read both your store and
+key can decrypt your values. See [how it works and what it protects](docs/how-it-works.md).
 
 ## Install
 
-Download prebuilt archives for Linux, macOS and Windows from the
-[GitHub releases page](https://github.com/peteraba/envmagic/releases),
-or install from source with Go 1.26.0+:
+Download a prebuilt archive for Linux, macOS, or Windows from
+[GitHub releases](https://github.com/peteraba/envmagic/releases), extract it, and
+put `envmagic` on your `PATH`.
+
+Or install with Go 1.26.0 or newer:
 
 ```sh
 go install github.com/peteraba/envmagic/cmd/envmagic@latest
-# or, from a clone:
-make build
 ```
 
-## Setup
+From a clone, `make build` creates `./envmagic`; put it on your `PATH` to use the
+shell integration.
 
-Add the shell integration to your rc file once:
+## Try it in Bash
+
+Run this in a fresh project directory. The value below is only a demo;
+[use stdin for real secrets](docs/usage.md#store-and-read-values). If you are
+reusing an existing store, [restore its original key](docs/operations.md#back-up-and-restore)
+before writing; a newly generated key cannot decrypt its old values.
 
 ```sh
-# bash
+# Enable integration in this shell; add this line to ~/.bashrc for future shells.
 eval "$(envmagic shell-init bash)"
 
-# zsh
-eval "$(envmagic shell-init zsh)"
-
-# fish
-envmagic shell-init fish | source
+# Use this directory, not an existing store in a parent directory.
+envmagic --here --yes set demo_token 'not-a-real-secret'
+envmagic list
+envmagic load demo_token
+printf '%s\n' "$DEMO_TOKEN"
 ```
 
-For PowerShell, add this to `$PROFILE`:
+`set` uppercases the name to `DEMO_TOKEN`. With the integration installed,
+`load` updates the current shell. Without it, the binary only prints assignments.
+[Zsh, fish, PowerShell, and scripts](docs/usage.md#shell-setup) have their own setup.
 
-```powershell
-envmagic shell-init pwsh | Out-String | Invoke-Expression
-```
+**Back up your key after the first write.** `envmagic key` prints its path and
+base64 content; save the content in a password manager or another trusted backup.
+Losing the key makes existing values unrecoverable. Do not replace an existing
+key to fix a decryption error: it is shared across projects.
+[Backup and recovery](docs/operations.md#back-up-and-restore).
 
-Without the shell wrapper, `envmagic load` and `envmagic load NAME` print `export …`
-statements; apply them with `eval "$(envmagic load)"` or `eval "$(envmagic load NAME)"`.
-Use `envmagic --format fish load [NAME]` to print fish `set -gx` assignments with
-single-quoted values; apply them with `envmagic --format fish load | source`.
-Use `envmagic --format pwsh load [NAME]` to print ASCII-only PowerShell assignments
-that decode base64 values as UTF-8 with `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('…'))`.
-Apply them with `envmagic --format pwsh load | Out-String | Invoke-Expression`.
-The PowerShell wrapper validates all assignments and sets variables without evaluating code.
-PowerShell output rejects values that are not valid UTF-8. Empty values stay set
-in PowerShell 7.6.6 on Linux (checked; Windows not verified); versions that remove
-variables on empty-string assignment will unset them instead. Supplying `--format`
-makes the shell wrappers print the assignments without applying them. A namespace
-literally named like a flag (`--help`, `--format`) also passes through without
-loading into the shell.
-`envmagic get NAME` (or `envmagic NAME`) prints the raw value with a trailing newline.
-Bare `envmagic` shows help. `--debug` echoes only load exports to stderr.
-Through the shell wrapper, `load` accepts only `-n`/`--namespace` and an optional
-valid NAME (`[A-Za-z_][A-Za-z0-9_]*`);
-use `command envmagic --debug load` for other flags without applying the output.
+## Go deeper
 
-## Usage
-
-After setup, store and load a value:
-
-```sh
-envmagic set api_key 'sk-abc123'
-envmagic load api_key
-printf '%s\n' "$API_KEY"
-```
-
-Store commands find the nearest `.envmagic` in the current directory or its parents.
-`set` and `import` print `envmagic: using PATH` to stderr when using a parent store;
-`--here` uses or creates `.envmagic` in the current directory instead.
-On Unix (including root), stores owned by another user are skipped with a warning; symlinks to stores you own work, and Windows has no ownership check.
-The library refuses to open stores owned by another user on Unix.
-If none exists, `set` and `import` offer to create one in the current directory;
-use `--yes` or `ENVMAGIC_NONINTERACTIVE=1` to skip the prompt (required when stdin is not a terminal).
-Use `-n NS` to select a namespace; the default is `default`.
-`load` is reserved as a namespace name.
-`-n` may be given only once; an existing namespace named `load` can no longer be used from the CLI.
-PowerShell consumes a bare `--`; quote it when storing a value starting with `-`:
-`envmagic set '--' NAME -value`.
-
-Variable names are uppercased automatically: `envmagic api_key …` stores
-`API_KEY`. If a name matches a subcommand (`get`, `set`, `load`, `list`, `key`, …),
-read it with `envmagic get NAME` and store it with `envmagic set NAME VALUE`
-(e.g. `envmagic set list foo`).
-
-## Backing up the encryption key
-
-Values are encrypted with AES-256-GCM using a per-user 32-byte key, shared
-across projects and generated by the first `set` or `import` with mode `0600`.
-The key lives in your user config directory, at:
-
-| OS | Key path |
-|---|---|
-| Linux | `$XDG_CONFIG_HOME/envmagic/key` (usually `~/.config/envmagic/key`) |
-| macOS | `~/Library/Application Support/envmagic/key` |
-| Windows | `%AppData%\envmagic\key` |
-
-`envmagic key` prints the exact path on any OS, along with the key content.
-
-On Windows, mode `0600` only sets or clears the read-only flag; it does not
-restrict other users. The key stays private because `%AppData%` is private to
-each user by default (its default ACL).
-
-When the key is created, envmagic prints it to stderr only if stderr is a
-terminal; otherwise it prints the path and a hint to run `envmagic key`.
-**If this key is lost or replaced, existing values cannot be decrypted.**
-
-Names and namespaces are stored in plaintext; `list` reveals names, not values,
-and works without the key, as does `rm`. Each encrypted value is
-bound to its namespace and name, so moving ciphertext between rows fails to
-decrypt.
-
-The `.envmagic` store is created with mode `0600`. Its values are encrypted,
-so it can be committed, but its names and namespaces remain visible. Keep the
-key out of repositories and shared backups you would not trust with plaintext.
-
-### Show the key
-
-```sh
-envmagic key
-# path:    /home/alice/.config/envmagic/key
-# content: 4Tz8…(base64)…==
-```
-
-Copy the `content` value to a password manager or other secure backup.
-
-### Restore the key
-
-On a new machine, or after a reinstall, paste the saved base64 string back:
-
-```sh
-envmagic key --set '4Tz8…(base64)…=='
-# envmagic: key restored to /home/alice/.config/envmagic/key
-```
-
-`key --set` validates that the decoded value is exactly 32 bytes before
-writing, so a truncated backup is rejected before it overwrites anything.
-
-### Teams and merge conflicts
-
-`.envmagic` is a binary SQLite file, so Git cannot merge two branches that
-both changed it. To resolve a conflict, keep one side's file and re-set the
-other side's values:
-
-```bash
-git checkout --ours .envmagic
-git add .envmagic
-envmagic set OTHER_NAME value
-```
+| Your question | Guide |
+| --- | --- |
+| How do I set, load, import, or export values? | [Usage](docs/usage.md) — shell setup, commands, namespaces, scripts, and dotenv rules |
+| Which store gets used, and what changes in my shell? | [Store selection](docs/usage.md#which-store-is-used) and [the load boundary](docs/usage.md#what-load-changes) |
+| How do encryption and storage work? What can an attacker see? | [How it works](docs/how-it-works.md) — architecture, data flow, and security boundaries |
+| How do I back up, share, use CI, or fix an error? | [Operations](docs/operations.md) — recovery, Git, teams, worktrees, and troubleshooting |
+| How do I use it from Go? | [Go library](docs/go-library.md) — explicit paths, reads, process loading, and errors |
+| How do I report a vulnerability? | [Security policy](SECURITY.md) |
 
 ## Upgrading from older builds
 
-Before installing the new build, copy the old binary to `envmagic-old`.
-Older values must be re-imported: from each store's directory, run the
-following for every namespace (replace `NS`, including `default`). List them with
-`sqlite3 .envmagic 'SELECT DISTINCT namespace FROM env_vars'`.
-
-Re-import before writing anything with the new build to that namespace: the old
-export fails on a new-format row, but without `pipefail` the pipe still exits 0.
-Use bash/zsh with `set -o pipefail` and check stderr:
-
-```sh
-set -o pipefail
-envmagic-old -n NS export | envmagic -n NS import
-```
-
-The old export silently replaces bytes that are not valid UTF-8 with U+FFFD;
-set such values again by hand with the new build. Import refuses a namespace
-with a line over 64 KiB and imports nothing from it: re-import it without those
-names first (`envmagic-old -n NS export | grep -v '^NAME=' | envmagic -n NS import`),
-then set them by hand. If you already wrote a name with the new build, remove it
-with `envmagic -n NS rm NAME`, re-import, then set it again.
-
-After all stores and namespaces are re-imported successfully, delete `envmagic-old`.
-
-## Commands
-
-| Command                                       | Description                                                         |
-| --------------------------------------------- | ------------------------------------------------------------------- |
-| `envmagic [-n NS]`                            | Show help                                                           |
-| `envmagic [-n NS] load`                       | Export all values in a namespace to the shell                       |
-| `envmagic [-n NS] get NAME`                   | Print the raw decrypted value and a newline                         |
-| `envmagic [-n NS] NAME`                       | Alias of `get NAME`                                                 |
-| `envmagic [-n NS] load NAME`                  | Emit `export NAME=…`; wrapper loads it into the shell               |
-| `envmagic [-n NS] set NAME [VALUE]`           | Encrypt and store `VALUE` under `NAME` (piped stdin if omitted)     |
-| `envmagic [-n NS] NAME VALUE`                 | Encrypt and store `VALUE` under `NAME`                              |
-| `envmagic [-n NS] list` (or `ls`)             | List names in a namespace                                           |
-| `envmagic [-n NS] rm NAME`                    | Remove a stored entry                                               |
-| `envmagic [-n NS] export [FILE]`              | Export namespace to a `.env` file (stdout if omitted)               |
-| `envmagic [-n NS] import [FILE]`              | Import `.env` values, overwriting existing names (stdin if omitted) |
-| `envmagic [-n NS] import -i FILE`             | Fill values in an interactive form (template values as defaults)    |
-| `envmagic [-n NS] import --empty [FILE]`      | Store empty values, ignoring template defaults                      |
-| `envmagic key`                                | Show the key file path and base64-encoded content                   |
-| `envmagic key --set <base64>`                 | Restore the key from a base64 string                                |
-| `envmagic shell-init <bash\|zsh\|fish\|pwsh>` | Print shell integration to eval                                     |
-| `envmagic help`                               | Show help                                                           |
-| `envmagic --version`                          | Show version                                                        |
-
-For real secrets, prefer `printf '%s' "$SECRET" | envmagic set NAME` to keep the value out of shell history and process arguments; stdin is limited to 1 MiB, removes exactly one trailing newline (LF or CRLF), and refuses empty input (use `envmagic set NAME ''` to store an empty value). Creating a store with the stdin form requires `--yes` or `ENVMAGIC_NONINTERACTIVE=1`.
-
-`import -i` is short for `import --interactive`. In the form, Enter keeps the
-template's value. Input is masked for names containing `KEY`, `SECRET`, `TOKEN`
-or `PASS`.
-
-## Library usage
-
-`envmagic` can be imported as a Go library for applications that need to load
-secrets into their environment at start-up.
-The store and key must already exist (created by `envmagic set` or `import`);
-a missing store or key returns an error matching `errors.Is(err, os.ErrNotExist)`.
-
-```sh
-go get github.com/peteraba/envmagic
-```
-
-### Load all variables into the process environment
-
-```go
-package main
-
-import (
-    "log"
-
-    "github.com/peteraba/envmagic"
-)
-
-func main() {
-    c, err := envmagic.OpenWithPath("/path/to/project/.envmagic")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer c.Close()
-
-    // Decrypts every variable in the namespace and calls os.Setenv for each.
-    if _, err := c.Load(envmagic.DefaultNamespace); err != nil {
-        log.Fatal(err)
-    }
-
-    // Secrets are now in the environment.
-    // ...
-}
-```
-
-### Read a single variable
-
-```go
-package main
-
-import (
-    "errors"
-    "fmt"
-    "log"
-
-    "github.com/peteraba/envmagic"
-)
-
-func main() {
-    c, err := envmagic.OpenWithPath("/path/to/project/.envmagic")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer c.Close()
-
-    val, err := c.Get(envmagic.DefaultNamespace, "API_KEY")
-    if errors.Is(err, envmagic.ErrNotFound) {
-        log.Fatal("API_KEY is not set")
-    }
-    if err != nil {
-        log.Fatal(err)
-    }
-    fmt.Println(val)
-}
-```
-
-Pass upper-case names to `Get`.
-See [pkg.go.dev](https://pkg.go.dev/github.com/peteraba/envmagic) for the API reference.
+Older ciphertext may need re-importing with the old binary **before** you write
+new-format values. Follow the [upgrade procedure](docs/operations.md#upgrading-from-older-builds)
+for every store and namespace; ordinary key restoration does not migrate ciphertext.
 
 ## License
 
